@@ -5,24 +5,26 @@
 
 // 直接导入所有模组 JSON 数据
 import lostMine from './dnd5e/lost-mine-of-phandelver.json'
-import curseOfStrahd from './dnd5e/curse-of-strahd.json'
-import dragonlance from './dnd5e/dragonlance.json'
-import tombOfAnnihilation from './dnd5e/tomb-of-annihilation.json'
-import icewindDale from './dnd5e/icewind-dale.json'
-import waterdeepDragonHeist from './dnd5e/waterdeep-dragon-heist.json'
+// TODO: 暂时隐藏以下模组，取消注释即可恢复
+// import curseOfStrahd from './dnd5e/curse-of-strahd.json'
+// import dragonlance from './dnd5e/dragonlance.json'
+// import tombOfAnnihilation from './dnd5e/tomb-of-annihilation.json'
+// import icewindDale from './dnd5e/icewind-dale.json'
+// import waterdeepDragonHeist from './dnd5e/waterdeep-dragon-heist.json'
 import lordOfMysteries from './lotm/lord-of-mysteries.json'
-import callOfCthulhu from './coc/call-of-cthulhu.json'
+// import callOfCthulhu from './coc/call-of-cthulhu.json'
 
 /** 所有可用模组列表 */
 const allModules = [
   lostMine,
-  curseOfStrahd,
-  dragonlance,
-  tombOfAnnihilation,
-  icewindDale,
-  waterdeepDragonHeist,
+  // TODO: 暂时隐藏以下模组，取消注释即可恢复
+  // curseOfStrahd,
+  // dragonlance,
+  // tombOfAnnihilation,
+  // icewindDale,
+  // waterdeepDragonHeist,
   lordOfMysteries,
-  callOfCthulhu,
+  // callOfCthulhu,
 ]
 
 /** 按系统分类 */
@@ -47,9 +49,9 @@ export function getModuleById(id) {
   return allModules.find(m => m.id === id) || null
 }
 
-/** 获取可用的模组系统列表 */
+/** 获取可用的模组系统列表（仅返回有模组的系统） */
 export function getAvailableSystems() {
-  return Object.keys(modulesBySystem)
+  return Object.keys(modulesBySystem).filter(k => modulesBySystem[k].length > 0)
 }
 
 /** 将模组数据转化为创建会话所需的参数 */

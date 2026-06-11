@@ -24,18 +24,20 @@ export const useCharacterStore = defineStore('character', () => {
 
   /** 创建角色 */
   async function createCharacter(sessionId, data) {
+    // 深度拷贝去除 Vue 响应式代理，确保 IndexedDB 可序列化
+    const raw = JSON.parse(JSON.stringify(data))
     const charData = {
       sessionId,
       ...defaultStats,
-      ...data,
-      avatar: data.avatar || '',
-      equipment: data.equipment || [],
-      skills: data.skills || [],
-      npcAffinity: data.npcAffinity || {},
-      status: data.status || '正常',
-      class: data.class || '战士',
-      race: data.race || '人类',
-      level: data.level || 1,
+      ...raw,
+      avatar: raw.avatar || '',
+      equipment: raw.equipment || [],
+      skills: raw.skills || [],
+      npcAffinity: raw.npcAffinity || {},
+      status: raw.status || '正常',
+      class: raw.class || '战士',
+      race: raw.race || '人类',
+      level: raw.level || 1,
       createdAt: Date.now()
     }
     const id = await db.characters.add(charData)

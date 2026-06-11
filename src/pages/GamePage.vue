@@ -23,6 +23,7 @@ import StatusRadar from '../components/visualization/StatusRadar.vue'
 import TimelineChart from '../components/visualization/TimelineChart.vue'
 import CombatStats from '../components/visualization/CombatStats.vue'
 import ExportDialog from '../components/export/ExportDialog.vue'
+import SaveSlotDialog from '../components/export/SaveSlotDialog.vue'
 import ChoiceButtons from '../components/chat/ChoiceButtons.vue'
 import { formatTime } from '../utils/format.js'
 import { statLabels } from '../utils/format.js'
@@ -60,6 +61,7 @@ const selectedCharId = ref(null)
 // 可视化面板
 const showStats = ref(false)
 const showExport = ref(false)
+const showSaveDialog = ref(false)
 const vizRefreshKey = ref(0)
 
 // 骰子面板 tab
@@ -119,6 +121,7 @@ async function generateOpeningNarrationIfNeeded() {
     let desc = `- ${c.name}：${c.race} ${c.class}`
     if (c.level) desc += ` Lv.${c.level}`
     if (c.pathway) desc += ` (${c.pathway})`
+    if (c.background) desc += `\n  📖 背景：${c.background}`
     if (c.surnameMeaning) desc += `\n  🔶 特殊姓氏背景：${c.surnameMeaning}`
     return desc
   }).join('\n')
@@ -243,7 +246,8 @@ async function recordGameEvent() {
       await createArchive(sessionStore.currentSessionId, selectedCharId.value || characterStore.currentCharacterId, {
         moduleName: moduleCtxStore.moduleName,
         characterName: characterStore.currentCharacter?.name || '',
-        dayCount: dayCycle.dayCount
+        dayCount: dayCycle.dayCount,
+        saveType: 'auto'
       })
       autoSaveNotice.value = `📥 自动存档完成 — 第${dayCycle.dayCount}天`
       setTimeout(() => { autoSaveNotice.value = '' }, 3000)
@@ -274,7 +278,8 @@ async function goHome() {
     await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
       moduleName: moduleCtxStore.moduleName,
       characterName: characterStore.currentCharacter?.name || '',
-      dayCount: dayCycle.dayCount
+      dayCount: dayCycle.dayCount,
+      saveType: 'auto'
     })
   }
   useUIStore().setPage('home')
@@ -520,6 +525,9 @@ function roleLabel(role) {
         <button class="btn-ghost text-xs" @click="showStats = !showStats">
           {{ showStats ? '隐藏' : '显示' }}数据统计
         </button>
+        <button class="btn-ghost text-xs" @click="showSaveDialog = true">
+          💾 手动存档
+        </button>
         <button class="btn-ghost text-xs" @click="showExport = true">
           导出记录
         </button>
@@ -569,25 +577,7 @@ function roleLabel(role) {
           <button class="btn-ghost text-xs" @click="exportChat(sessionStore.currentSessionId, sessionStore.currentSession?.name)">
             导出
           </button>
-          <button class="btn-ghost text-xs" @click="chatStore.clearChat(sessionStore.currentSessionId)">
-            清空
-          </button>
-          <!-- 游戏控制 -->
-          <div class="border-l border-[#D8D2C8] pl-2 ml-1 flex gap-1">
-            <button class="btn-ghost text-xs" @click="goHome">
-              主页
-            </button>
-            <template v-if="!showResetConfirm">
-              <button class="btn-ghost text-xs text-red-400" @click="showResetConfirm = true">
-                结束
-              </button>
-            </template>
-            <template v-else>
-              <span class="text-[10px] text-red-400">确认?</span>
-              <button class="text-[10px] bg-red-400 text-white px-2 py-0.5 rounded" @click="endGame">是</button>
-              <button class="text-[10px] text-ink-muted px-1" @click="showResetConfirm = false">否</button>
-            </template>
-          </div>
+          <button class="btn-ghost text-xs" @click="chatStore.clearChat(sessionStore.currentSessionId)">清空</button>
         </div>
       </div>
 
@@ -848,5 +838,34 @@ function roleLabel(role) {
       :session-name="sessionStore.currentSession?.name"
       @close="showExport = false"
     />
+
+    <!-- 手动存档弹窗 -->
+    <SaveSlotDialog
+      v-if="showSaveDialog"
+      :session-id="sessionStore.currentSessionId"
+      :character-id="characterStore.currentCharacterId"
+      :module-name="moduleCtxStore.moduleName || ''"
+      :character-name="characterStore.currentCharacter?.name || ''"
+      :day-count="dayCycle.dayCount"
+      @saved="showSaveDialog = false"
+      @close="showSaveDialog = false"
+    />
+
+    <!-- 右下角浮动结束游戏按钮 -->
+    <div class="fixed bottom-6 right-6 z-40">
+      <template v-if="!showResetConfirm">
+        <button
+          class="text-xs bg-white/80 backdrop-blur border border-red-200 text-red-400 px-3 py-1.5 rounded-full shadow-sm hover:bg-red-50 hover:border-red-300 transition-all"
+          @click="showResetConfirm = true"
+        >结束游戏</button>
+      </template>
+      <template v-else>
+        <div class="flex items-center gap-2 bg-white/90 backdrop-blur border border-red-200 rounded-full px-3 py-1.5 shadow-sm">
+          <span class="text-[10px] text-red-500">确定结束？</span>
+          <button class="text-[10px] bg-red-400 text-white px-2 py-0.5 rounded-full" @click="endGame">确认</button>
+          <button class="text-[10px] text-ink-muted hover:text-ink-primary px-1" @click="showResetConfirm = false">取消</button>
+        </div>
+      </template>
+    </div>
   </div>
 </template>

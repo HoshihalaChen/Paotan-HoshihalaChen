@@ -28,14 +28,16 @@ export const useWorldStore = defineStore('world', () => {
 
   /** 添加/更新条目 */
   async function addEntry(sessionId, entry) {
+    // 确保数据可序列化（去除 Vue 响应式代理）
+    const raw = JSON.parse(JSON.stringify(entry))
     const data = {
       sessionId,
-      category: entry.category || '未分类',
-      title: entry.title || '',
-      content: entry.content || '',
-      tags: entry.tags || [],
-      icon: entry.icon || '◆',
-      order: entry.order || 0,
+      category: raw.category || '未分类',
+      title: raw.title || '',
+      content: raw.content || '',
+      tags: raw.tags || [],
+      icon: raw.icon || '◆',
+      order: raw.order || 0,
     }
     if (entry.id) {
       await db.worldInfo.update(entry.id, data)

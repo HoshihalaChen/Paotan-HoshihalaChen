@@ -1,317 +1,332 @@
 <script setup>
+// 存档管理页 — 全局三级浏览器：模组 → 角色 → 槽位
 import { ref, computed, onMounted } from 'vue'
 import { useSessionStore } from '../stores/session.js'
 import { useCharacterStore } from '../stores/character.js'
-import { useChatStore } from '../stores/chat.js'
 import { useUIStore } from '../stores/ui.js'
+import { useChatStore } from '../stores/chat.js'
 import { useModuleContextStore } from '../stores/moduleContext.js'
 import { useDayCycleStore } from '../stores/dayCycle.js'
-import { useBackup } from '../composables/useBackup.js'
-import { getArchivesGrouped, restoreArchive, deleteArchive, exportSelectedArchives, createArchive } from '../services/archive.js'
-import { db } from '../db/index.js'
+import {
+  getGlobalArchivesGrouped, getRecommendedArchive, getManualArchives,
+  restoreArchive, deleteArchive, exportSelectedArchives, createArchive
+} from '../services/archive.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
-import CompassLogo from '../components/common/CompassLogo.vue'
 
 const sessionStore = useSessionStore()
 const characterStore = useCharacterStore()
-const chatStore = useChatStore()
 const ui = useUIStore()
+const chatStore = useChatStore()
 const moduleCtxStore = useModuleContextStore()
 const dayCycle = useDayCycleStore()
-const backupService = useBackup()
 
-// 存档分组数据
-const archivesGrouped = ref({})
-const loading = ref(false)
-const showPrompt = ref(false)
-const pendingRestore = ref(null)
-const pendingNav = ref(null)
+// ===== 数据加载 =====
+const allModules = ref([])
+const groupedArchives = ref({})
+const expandedModule = ref(null)
+const expandedCharKey = ref(null)
+const loading = ref(true)
 
-// 展开状态
-const expandedMod = ref(null)
-const expandedChar = ref(null)
+async function loadData() {
+  loading.value = true
+  try {
+    const mod = await import('../../modules/index.js')
+    allModules.value = mod.getAllModules()
+    groupedArchives.value = await getGlobalArchivesGrouped()
+    await sessionStore.loadSessions()
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(loadData)
 
-// 选中批量备份
-const selectedIds = ref(new Set())
-
-// 备份管理
-const allBackups = ref([])
-
-onMounted(async () => {
-  await loadArchives()
-  allBackups.value = await backupService.getAllBackups()
+// ===== 模组排序：活跃会话 > 有存档 > 无数据 =====
+const sortedModules = computed(() => {
+  const mods = [...allModules.value].filter(Boolean)
+  const getActivity = (mod) => {
+    if (!mod) return { tier: 3, time: 0, label: '' }
+    const sessions = (sessionStore.sessions || []).filter(s => s && s.moduleId === mod.id)
+    if (sessions.length > 0) {
+      return { tier: 1, time: Math.max(...sessions.map(s => s.updatedAt || 0)), label: '最近游玩' }
+    }
+    const archives = groupedArchives.value[mod.name]
+    if (archives) {
+      const times = Object.values(archives).flat().map(a => a.createdAt || 0)
+      if (times.length > 0) return { tier: 2, time: Math.max(...times), label: '有存档' }
+    }
+    return { tier: 3, time: 0, label: '' }
+  }
+  mods.forEach(m => { m._activity = getActivity(m) })
+  mods.sort((a, b) => {
+    if (a._activity.tier !== b._activity.tier) return a._activity.tier - b._activity.tier
+    return b._activity.time - a._activity.time
+  })
+  return mods
 })
 
-async function loadArchives() {
-  loading.value = true
-  archivesGrouped.value = await getArchivesGrouped()
-  loading.value = false
+// ===== 模组下的角色列表 =====
+function getModuleCharacters(modName) {
+  if (!modName || !groupedArchives.value) return []
+  const modArchives = groupedArchives.value[modName]
+  if (!modArchives) return []
+  return Object.keys(modArchives).filter(Boolean).map(name => {
+    const archives = modArchives[name]
+    const latest = archives[0]
+    return {
+      name,
+      archiveCount: archives.length,
+      latestDay: latest?.dayCount || 0,
+      latestTime: latest?.createdAtBJ || new Date(latest?.createdAt || 0).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+      createdAt: latest?.createdAt || 0,
+      archives
+    }
+  }).sort((a, b) => b.createdAt - a.createdAt)
 }
 
-const moduleList = computed(() => Object.keys(archivesGrouped.value).sort())
+// ===== 角色的存档槽位 =====
+const charSlots = ref({})
 
-function charList(modName) {
-  return Object.keys(archivesGrouped.value[modName] || {}).sort()
+async function loadCharSlots(modName, charName) {
+  const key = modName + '/' + charName
+  if (charSlots.value[key]) return charSlots.value[key]
+  const archives = groupedArchives.value[modName]?.[charName] || []
+  if (!archives.length) return null
+  const firstArchive = archives[0]
+  const [recommended, manuals] = await Promise.all([
+    getRecommendedArchive(firstArchive.sessionId, firstArchive.characterId),
+    getManualArchives(firstArchive.sessionId, firstArchive.characterId)
+  ])
+  const data = { recommended, manuals: manuals || [] }
+  charSlots.value[key] = data
+  return data
 }
 
-function archivesFor(modName, charName) {
-  return archivesGrouped.value[modName]?.[charName] || []
+function toggleModule(modName) {
+  expandedModule.value = expandedModule.value === modName ? null : modName
+  expandedCharKey.value = null
 }
 
-function toggleMod(name) { expandedMod.value = expandedMod.value === name ? null : name }
-function toggleChar(name) { expandedChar.value = expandedChar.value === name ? null : name }
-
-/** 格式化时间 */
-function fmtTime(ts) { return new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) }
-
-/** 请求恢复存档 */
-function requestRestore(archive) {
-  showPrompt.value = true
-  pendingRestore.value = archive
-}
-
-/** 确认恢复 */
-async function confirmRestore() {
-  if (!pendingRestore.value) return
-  const archive = pendingRestore.value
-
-  // 先保存当前进度
-  if (sessionStore.currentSessionId && sessionStore.isGameActive) {
-    const charId = characterStore.currentCharacterId
-    await createArchive(sessionStore.currentSessionId, charId, {
-      moduleName: moduleCtxStore.moduleName,
-      characterName: characterStore.currentCharacter?.name || '',
-      dayCount: dayCycle.dayCount,
-      force: true
-    })
+async function toggleCharacter(modName, charName) {
+  const key = modName + '/' + charName
+  expandedCharKey.value = expandedCharKey.value === key ? null : key
+  if (expandedCharKey.value === key) {
+    await loadCharSlots(modName, charName)
   }
-
-  // 恢复目标存档
-  const { sessionId, snapshot } = await restoreArchive(archive.id)
-
-  // 切换会话
-  await sessionStore.switchSession(sessionId)
-  await sessionStore.activateGame(sessionId)
-
-  // 恢复日期
-  if (snapshot.dayCount != null) {
-    dayCycle.dayCount = snapshot.dayCount
-  }
-
-  // 重新加载
-  await chatStore.loadMessages(sessionId)
-  await characterStore.loadCharacters(sessionId)
-
-  showPrompt.value = false
-  pendingRestore.value = null
-  ui.setPage('game')
 }
 
-function cancelRestore() {
-  showPrompt.value = false
-  pendingRestore.value = null
-}
+// ===== 操作 =====
+const selectedIds = ref(new Set())
+const showRestoreConfirm = ref(null)
 
-/** 删除存档 */
-async function removeArchive(archive) {
-  if (!confirm(`确定删除「${archive.characterName}」第${archive.dayCount}天的存档吗？`)) return
-  await deleteArchive(archive.id)
-  await loadArchives()
-}
-
-/** 切换选择 */
 function toggleSelect(id) {
   const s = new Set(selectedIds.value)
   s.has(id) ? s.delete(id) : s.add(id)
   selectedIds.value = s
 }
 
-/** 导出选中 */
+async function requestRestore(archive) {
+  showRestoreConfirm.value = archive
+}
+
+async function confirmRestore() {
+  const archive = showRestoreConfirm.value
+  if (!archive) return
+  try {
+    if (sessionStore.isGameActive && sessionStore.currentSessionId) {
+      await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
+        moduleName: moduleCtxStore.moduleName || '',
+        characterName: characterStore.currentCharacter?.name || '',
+        dayCount: dayCycle.dayCount,
+        saveType: 'auto'
+      })
+    }
+    const result = await restoreArchive(archive.id)
+    await sessionStore.switchSession(result.sessionId)
+    await sessionStore.activateGame(result.sessionId)
+    await chatStore.loadMessages(result.sessionId)
+    await characterStore.loadCharacters(result.sessionId)
+    dayCycle.dayCount = result.snapshot.dayCount || 0
+    dayCycle.eventsToday = 0
+    ui.setPage('game')
+    showRestoreConfirm.value = null
+  } catch (e) {
+    console.error('恢复失败:', e)
+  }
+}
+
+async function removeArchive(archive) {
+  if (!confirm(`确定删除「${archive.characterName}」D${archive.dayCount} 的存档吗？`)) return
+  await deleteArchive(archive.id)
+  charSlots.value = {}
+  groupedArchives.value = await getGlobalArchivesGrouped()
+}
+
+async function manualSaveCurrent() {
+  if (!sessionStore.currentSessionId) return alert('请先在游戏中才能手动存档')
+  try {
+    await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
+      moduleName: moduleCtxStore.moduleName || '',
+      characterName: characterStore.currentCharacter?.name || '',
+      dayCount: dayCycle.dayCount,
+      saveType: 'manual',
+      force: true
+    })
+    charSlots.value = {}
+    groupedArchives.value = await getGlobalArchivesGrouped()
+    alert('手动存档完成')
+  } catch (e) {
+    alert(e.message)
+  }
+}
+
 async function exportSelected() {
   if (selectedIds.value.size === 0) return
   await exportSelectedArchives([...selectedIds.value])
-  selectedIds.value = new Set()
 }
 
-/** 一键全部备份 */
-async function backupAllArchives() {
-  const allIds = []
-  for (const mod of moduleList.value) {
-    for (const char of charList(mod)) {
-      for (const a of archivesFor(mod, char)) {
-        allIds.push(a.id)
-      }
-    }
-  }
-  if (allIds.length === 0) return
-  await exportSelectedArchives(allIds)
-}
-
-/** 手动保存当前游戏 */
-async function manualSave() {
-  if (!sessionStore.currentSessionId) {
-    alert('没有正在进行的游戏')
-    return
-  }
-  await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
-    moduleName: moduleCtxStore.moduleName,
-    characterName: characterStore.currentCharacter?.name || '',
-    dayCount: dayCycle.dayCount,
-    force: true
-  })
-  await loadArchives()
-}
-
-/** 备份操作 */
-async function downloadBackup(b) { backupService.downloadBackup(b) }
-async function removeBackup(id) { await backupService.deleteBackup(id); allBackups.value = await backupService.getAllBackups() }
-async function clearBackups() {
-  if (confirm('确定清空所有备份？')) { await backupService.clearAllBackups(); allBackups.value = [] }
+function charColor(name) {
+  let hash = 0
+  for (const c of name || '?') hash = ((hash << 5) - hash) + c.charCodeAt(0)
+  return `hsl(${Math.abs(hash) % 360}, 25%, 50%)`
 }
 </script>
 
 <template>
   <div class="max-w-5xl mx-auto space-y-6">
-    <!-- 标题 -->
+    <!-- 标题栏 -->
     <div class="flex justify-between items-center">
-      <div class="flex items-center gap-3">
-        <CompassLogo />
-        <div>
-          <h2 class="text-xl text-ink-primary tracking-wider">存档管理</h2>
-          <p class="text-xs text-ink-muted">存读档 · 回退 · 备份</p>
-        </div>
+      <div>
+        <h2 class="text-xl text-ink-primary tracking-wider">存档管理</h2>
+        <p class="text-xs text-ink-muted mt-0.5">{{ allModules.length }} 个模组 · 全局存档浏览</p>
       </div>
       <div class="flex gap-2">
-        <button class="btn-ghost text-xs" @click="loadArchives" :disabled="loading">
-          {{ loading ? '加载中...' : '刷新' }}
-        </button>
-        <button class="btn-primary text-sm" @click="manualSave" :disabled="!sessionStore.isGameActive">
-          手动存档
-        </button>
+        <button class="btn-ghost text-xs" @click="loadData" :disabled="loading">{{ loading ? '加载中...' : '刷新' }}</button>
+        <button class="btn-ghost text-xs" @click="manualSaveCurrent">💾 手动存档</button>
+        <button v-if="selectedIds.size > 0" class="btn-primary text-xs" @click="exportSelected">导出选中 ({{ selectedIds.size }})</button>
       </div>
     </div>
 
-    <!-- 存档列表（三级分类） -->
-    <CardWrapper v-if="moduleList.length === 0 && !loading" class="p-12 text-center">
-      <p class="text-sm text-ink-muted">暂无存档</p>
-      <p class="text-xs text-ink-muted/60 mt-1">游戏天数+1时自动存档，也可随时手动存档</p>
+    <!-- 空状态 -->
+    <CardWrapper v-if="Object.keys(groupedArchives).length === 0" class="p-12 text-center">
+      <p class="text-sm text-ink-muted">暂无存档。开始游戏后自动存档将出现在这里。</p>
     </CardWrapper>
 
-    <div v-for="mod in moduleList" :key="mod" class="space-y-2">
-      <!-- 一级：模组 -->
-      <div
-        class="flex items-center gap-3 p-3 rounded-lg cursor-pointer hover:bg-[#F5F0E8] transition-colors"
-        :class="expandedMod === mod ? 'bg-[#F5F0E8]' : ''"
-        @click="toggleMod(mod)"
-      >
-        <span class="text-xs">{{ expandedMod === mod ? '▼' : '▶' }}</span>
-        <span class="text-sm text-ink-primary font-medium">📦 {{ mod }}</span>
-        <span class="text-xs text-ink-muted">
-          ({{ Object.values(archivesGrouped[mod] || {}).flat().length }} 存档)
-        </span>
-      </div>
-
-      <div v-if="expandedMod === mod" class="pl-8 space-y-1">
-        <!-- 二级：角色 -->
-        <div v-for="char in charList(mod)" :key="char">
-          <div
-            class="flex items-center gap-3 p-2 rounded-lg cursor-pointer hover:bg-[#FAF7F2] transition-colors"
-            :class="expandedChar === mod + '|' + char ? 'bg-[#FAF7F2]' : ''"
-            @click="toggleChar(mod + '|' + char)"
-          >
-            <span class="text-xs">{{ expandedChar === mod + '|' + char ? '▼' : '▶' }}</span>
-            <span class="text-sm text-ink-secondary">👤 {{ char }}</span>
-            <span class="text-[10px] text-ink-muted">
-              {{ archivesFor(mod, char)[0]?.createdAtBJ || '' }}
-              ({{ archivesFor(mod, char).length }}/10)
-            </span>
-          </div>
-
-          <!-- 三级：天数存档 -->
-          <div v-if="expandedChar === mod + '|' + char" class="pl-8 space-y-1 mt-1">
-            <div
-              v-for="archive in archivesFor(mod, char)"
-              :key="archive.id"
-              class="flex items-center justify-between p-2 rounded hover:bg-[#F5F0E8]/50 transition-colors"
-            >
-              <div class="flex items-center gap-3">
-                <input
-                  type="checkbox"
-                  :checked="selectedIds.has(archive.id)"
-                  class="accent-[#5A5550] w-3 h-3"
-                  @click.stop
-                  @change="toggleSelect(archive.id)"
-                />
-                <div>
-                  <p class="text-xs text-ink-primary">
-                    📅 第 {{ archive.dayCount }} 天
-                    <span class="text-[10px] text-ink-muted ml-2">{{ fmtTime(archive.createdAt) }}</span>
-                  </p>
-                </div>
-              </div>
-              <div class="flex gap-1">
-                <button class="text-[10px] text-[#5A7A5A] hover:underline px-1" @click="requestRestore(archive)">
-                  读取
-                </button>
-                <button class="text-[10px] text-red-400 hover:underline px-1" @click="removeArchive(archive)">
-                  删除
-                </button>
+    <!-- 模组列表 -->
+    <div class="space-y-4">
+      <div v-for="mod in sortedModules" :key="mod.id" class="fade-in">
+        <CardWrapper
+          class="p-5 cursor-pointer transition-all"
+          :class="mod._activity.tier === 3 ? 'opacity-40 cursor-not-allowed' : 'hover:shadow-md hover:-translate-y-0.5'"
+          @click="mod._activity.tier < 3 && toggleModule(mod.name)"
+        >
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-4">
+              <span class="text-xs transition-transform" :class="expandedModule === mod.name ? 'rotate-90' : ''">▶</span>
+              <div>
+                <h3 class="text-base text-ink-primary font-medium">{{ mod.name }}</h3>
+                <p class="text-[10px] text-ink-muted">{{ mod.system }} · {{ mod.levelRange }} · 角色: {{ getModuleCharacters(mod.name).length }}</p>
               </div>
             </div>
+            <div class="flex items-center gap-3">
+              <span v-if="mod._activity.label" class="text-[10px] px-2 py-0.5 rounded-full"
+                :class="mod._activity.tier === 1 ? 'bg-[#5A7A5A]/10 text-[#5A7A5A]' : 'bg-[#8B8580]/10 text-[#6B6560]'">
+                {{ mod._activity.label }}
+              </span>
+              <span v-if="mod._activity.time" class="text-[10px] text-ink-muted/50">
+                {{ new Date(mod._activity.time).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' }) }}
+              </span>
+            </div>
           </div>
+        </CardWrapper>
+
+        <!-- 角色列表 -->
+        <div v-if="expandedModule === mod.name" class="mt-3 ml-8 space-y-4 fade-in">
+          <div class="flex gap-3 overflow-x-auto pb-2">
+            <CardWrapper
+              v-for="char in getModuleCharacters(mod.name)" :key="char.name"
+              class="flex-shrink-0 w-52 p-4 cursor-pointer transition-all duration-200 hover:scale-105 hover:shadow-lg"
+              :class="expandedCharKey === mod.name + '/' + char.name ? 'ring-2 ring-[#5A5550]/30' : ''"
+              @click.stop="toggleCharacter(mod.name, char.name)"
+            >
+              <div class="flex items-center gap-3 mb-3">
+                <div class="w-10 h-10 rounded-full flex items-center justify-center text-[#FAF7F2] text-sm flex-shrink-0" :style="{ backgroundColor: charColor(char.name) }">
+                  {{ char.name.charAt(0) }}
+                </div>
+                <div class="min-w-0">
+                  <p class="text-sm text-ink-primary font-medium truncate">{{ char.name }}</p>
+                  <p class="text-[10px] text-ink-muted">D{{ char.latestDay }} · {{ char.archiveCount }} 个存档</p>
+                </div>
+              </div>
+              <p class="text-[10px] text-ink-muted/70 text-right">{{ char.latestTime }}</p>
+            </CardWrapper>
+          </div>
+
+          <!-- 存档槽位 -->
+          <template v-for="char in getModuleCharacters(mod.name)" :key="'slots-'+char.name">
+            <div v-if="expandedCharKey === mod.name + '/' + char.name && charSlots[mod.name + '/' + char.name]" class="fade-in">
+              <div class="space-y-2 pl-4 border-l-2 border-[#E8E2D8]">
+              <!-- 推荐存档 -->
+              <div v-if="charSlots[mod.name + '/' + char.name]?.recommended" class="flex items-center gap-3 p-3 rounded-lg border border-[#5A7A5A]/30 bg-[#5A7A5A]/5">
+                <span class="text-xs bg-[#5A7A5A] text-white px-1.5 py-0.5 rounded">⭐ 推荐</span>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm text-ink-primary">
+                    第 {{ charSlots[mod.name + '/' + char.name].recommended.dayCount }} 天
+                    <span class="text-[10px] text-ink-muted ml-2">{{ charSlots[mod.name + '/' + char.name].recommended.saveType === 'auto' ? '自动存档' : '手动存档' }}</span>
+                  </p>
+                  <p class="text-[10px] text-ink-muted">{{ charSlots[mod.name + '/' + char.name].recommended.createdAtBJ || '' }}</p>
+                </div>
+                <div class="flex gap-1 flex-shrink-0">
+                  <input type="checkbox" class="w-3 h-3" :checked="selectedIds.has(charSlots[mod.name + '/' + char.name].recommended.id)" @click.stop @change="toggleSelect(charSlots[mod.name + '/' + char.name].recommended.id)" />
+                  <button class="text-[10px] text-[#5A7A5A] hover:underline px-1" @click.stop="requestRestore(charSlots[mod.name + '/' + char.name].recommended)">读取</button>
+                </div>
+              </div>
+
+              <!-- 手动存档槽位 -->
+              <div v-for="(_, idx) in [...Array(5).keys()]" :key="'m-'+idx"
+                class="flex items-center gap-3 p-3 rounded-lg border"
+                :class="charSlots[mod.name + '/' + char.name]?.manuals[idx] ? 'border-[#D8D2C8] bg-[#FAF7F2]' : 'border-dashed border-[#D8D2C8]/40 bg-transparent'"
+              >
+                <span class="text-xs text-ink-muted/50 w-6">#{{ idx + 1 }}</span>
+                <template v-if="charSlots[mod.name + '/' + char.name]?.manuals[idx]">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-sm text-ink-primary">第 {{ charSlots[mod.name + '/' + char.name].manuals[idx].dayCount }} 天 <span class="text-[10px] text-ink-muted ml-2">手动存档</span></p>
+                    <p class="text-[10px] text-ink-muted">{{ charSlots[mod.name + '/' + char.name].manuals[idx].createdAtBJ || '' }}</p>
+                  </div>
+                  <div class="flex gap-1 flex-shrink-0">
+                    <input type="checkbox" class="w-3 h-3" :checked="selectedIds.has(charSlots[mod.name + '/' + char.name].manuals[idx].id)" @click.stop @change="toggleSelect(charSlots[mod.name + '/' + char.name].manuals[idx].id)" />
+                    <button class="text-[10px] text-[#5A7A5A] hover:underline px-1" @click.stop="requestRestore(charSlots[mod.name + '/' + char.name].manuals[idx])">读取</button>
+                    <button class="text-[10px] text-red-400 hover:text-red-600 px-1" @click.stop="removeArchive(charSlots[mod.name + '/' + char.name].manuals[idx])">删除</button>
+                  </div>
+                </template>
+                <template v-else>
+                  <p class="text-sm text-ink-muted/30">空槽位</p>
+                </template>
+              </div>
+              </div>
+            </div>
+          </template>
         </div>
       </div>
     </div>
-
-    <!-- 批量操作 -->
-    <CardWrapper v-if="selectedIds.size > 0" class="p-4 flex items-center justify-between">
-      <span class="text-xs text-ink-secondary">已选 {{ selectedIds.size }} 个存档</span>
-      <div class="flex gap-2">
-        <button class="btn-primary text-xs" @click="exportSelected">导出选中</button>
-        <button class="btn-ghost text-xs" @click="selectedIds = new Set()">取消选择</button>
-      </div>
-    </CardWrapper>
-
-    <!-- 备份管理（从设置页迁移） -->
-    <CardWrapper class="p-6">
-      <div class="flex justify-between items-center mb-4">
-        <h3 class="text-sm text-ink-secondary tracking-wide">
-          备份管理 <span class="text-xs text-ink-muted">({{ allBackups.length }} 个)</span>
-        </h3>
-        <div class="flex gap-2">
-          <button class="btn-primary text-xs" @click="backupAllArchives" :disabled="moduleList.length === 0">
-            一键全部备份
-          </button>
-          <button v-if="allBackups.length > 0" class="btn-ghost text-xs text-red-400" @click="clearBackups">
-            清空备份
-          </button>
-        </div>
-      </div>
-      <div v-if="allBackups.length === 0" class="text-xs text-ink-muted py-2 text-center">暂无备份</div>
-      <div v-else class="space-y-1 max-h-48 overflow-y-auto">
-        <div v-for="b in allBackups" :key="b.id" class="flex items-center justify-between text-xs py-1">
-          <span class="text-ink-secondary truncate flex-1">{{ b.filename }}</span>
-          <span class="text-ink-muted mx-2">{{ fmtTime(b.createdAt) }}</span>
-          <button class="text-ink-muted hover:text-ink-primary px-1" @click="downloadBackup(b)">下载</button>
-          <button class="text-red-400 hover:text-red-600 px-1" @click="removeBackup(b.id)">删除</button>
-        </div>
-      </div>
-    </CardWrapper>
 
     <!-- 恢复确认弹窗 -->
     <Teleport to="body">
-      <div v-if="showPrompt" class="fixed inset-0 bg-black/30 z-50 flex items-center justify-center">
-        <CardWrapper class="w-[400px] p-6">
-          <h3 class="text-lg text-ink-primary mb-2">确认读取存档</h3>
-          <p class="text-sm text-ink-secondary mb-1">
-            将恢复到「{{ pendingRestore?.characterName }}」第 {{ pendingRestore?.dayCount }} 天的存档。
-          </p>
-          <p class="text-xs text-ink-muted mb-4">
-            当前进度将自动保存后再恢复。此操作不可撤销。
-          </p>
+      <div v-if="showRestoreConfirm" class="fixed inset-0 bg-black/30 z-50 flex items-center justify-center" @click.self="showRestoreConfirm = null">
+        <CardWrapper class="w-[440px] p-6">
+          <h3 class="text-lg text-ink-primary mb-3">⚠️ 确认读取存档</h3>
+          <div class="space-y-3 mb-4">
+            <p class="text-sm text-ink-secondary">
+              将读取「<strong>{{ showRestoreConfirm.characterName }}</strong>」第 <strong>{{ showRestoreConfirm.dayCount }}</strong> 天的存档。
+            </p>
+            <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+              <p>· 当前未保存的游戏进度将被<strong>覆盖</strong></p>
+              <p>· 读取后页面将刷新，自动加载存档中的对话记录</p>
+              <p>· 若存档末尾有未完成的选项，将重新生成选项框供继续选择</p>
+            </div>
+          </div>
           <div class="flex justify-end gap-3">
-            <button class="btn-ghost text-sm" @click="cancelRestore">取消</button>
-            <button class="btn-primary text-sm" @click="confirmRestore">确认恢复</button>
+            <button class="btn-ghost text-sm" @click="showRestoreConfirm = null">取消</button>
+            <button class="btn-primary text-sm bg-amber-600 hover:bg-amber-700" @click="confirmRestore">确认读取并覆盖</button>
           </div>
         </CardWrapper>
       </div>

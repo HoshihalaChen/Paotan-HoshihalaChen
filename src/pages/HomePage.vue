@@ -6,6 +6,7 @@ import { useCharacterStore } from '../stores/character.js'
 import { useChatStore } from '../stores/chat.js'
 import { useUIStore } from '../stores/ui.js'
 import { useModuleContextStore } from '../stores/moduleContext.js'
+import { useDayCycleStore } from '../stores/dayCycle.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
 import CompassLogo from '../components/common/CompassLogo.vue'
 import ModuleInitModal from '../components/export/ModuleInitModal.vue'
@@ -15,6 +16,7 @@ const characterStore = useCharacterStore()
 const chatStore = useChatStore()
 const ui = useUIStore()
 const moduleCtxStore = useModuleContextStore()
+const dayCycleStore = useDayCycleStore()
 
 // 加载状态
 const loading = ref(true)
@@ -40,9 +42,6 @@ const selectedModule = ref(null)
 
 // 新建冒险表单
 const formData = ref({ name: '', system: 'D&D 5E', description: '' })
-
-// 重置确认
-const showResetConfirm = ref(false)
 
 // 队伍角色
 const partyMembers = computed(() =>
@@ -84,16 +83,22 @@ onMounted(() => {
   initPage()
 })
 
+const pendingModule = ref(null) // 等待确认的模组
+
 /** 打开初始化弹窗 */
 function openInitModal(mod) {
-  // 防止重复点击
   if (clickingButton.value) return
 
   if (sessionStore.isGameActive) {
-    console.log('Game is active, cannot start new module')
+    // 游戏进行中，弹出确认提示
+    pendingModule.value = mod
     return
   }
 
+  doOpenInitModal(mod)
+}
+
+function doOpenInitModal(mod) {
   clickingButton.value = mod.id
   try {
     selectedModule.value = mod
@@ -103,6 +108,33 @@ function openInitModal(mod) {
   } finally {
     clickingButton.value = null
   }
+}
+
+/** 确认覆盖当前游戏，开始新模组 */
+async function confirmNewGame() {
+  const mod = pendingModule.value
+  pendingModule.value = null
+  if (!mod) return
+
+  // 先存档当前进度
+  if (sessionStore.currentSessionId) {
+    try {
+      const { createArchive } = await import('../services/archive.js')
+      await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
+        moduleName: moduleCtxStore.activeModule?.name || '',
+        characterName: characterStore.currentCharacter?.name || '',
+        dayCount: dayCycleStore.dayCount,
+        saveType: 'auto'
+      })
+    } catch (e) { /* 静默 */ }
+  }
+  // 重置当前游戏
+  if (sessionStore.currentSessionId) {
+    await sessionStore.resetGame(sessionStore.currentSessionId)
+    moduleCtxStore.unbindModule()
+    chatStore.messages = []
+  }
+  doOpenInitModal(mod)
 }
 
 /** 初始化完成回调 */
@@ -213,39 +245,40 @@ function avatarColor(index) {
 
     <!-- 主内容 -->
     <template v-if="!loading && !loadError">
-      <!-- ===== 游戏激活状态横幅 ===== -->
+      <!-- ===== 游戏激活状态横幅（简化为状态提示） ===== -->
       <div
         v-if="sessionStore.isGameActive"
-        class="bg-[#5A7A5A]/10 border border-[#5A7A5A]/30 rounded-card p-5"
-        style="box-shadow: inset 0 0 0 1px rgba(90,122,90,0.15);"
+        class="bg-[#5A7A5A]/10 border border-[#5A7A5A]/30 rounded-card px-5 py-3"
       >
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <div class="w-3 h-3 rounded-full bg-[#5A7A5A] animate-pulse" />
-            <div>
-              <h3 class="text-sm text-[#4A6A4A] font-medium tracking-wide">已有世界正在运行中</h3>
-              <p class="text-xs text-[#5A7A5A]/70 mt-0.5">
-                当前冒险「{{ sessionStore.currentSession?.name }}」正在进行中
-              </p>
-            </div>
+          <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-[#5A7A5A] animate-pulse" />
+            <span class="text-xs text-[#4A6A4A]">「{{ sessionStore.currentSession?.name }}」进行中</span>
           </div>
-          <div class="flex gap-2">
-            <button class="btn-primary text-sm tracking-wider" @click="goToGame">继续冒险 →</button>
-            <template v-if="!showResetConfirm">
-              <button class="btn-ghost text-xs text-red-400 hover:text-red-600" @click="showResetConfirm = true">
-                重置游戏
-              </button>
-            </template>
-            <template v-else>
-              <span class="text-xs text-red-400">确认重置？</span>
-              <button class="text-xs bg-red-400 text-white px-2 py-1 rounded" @click="resetCurrentGame" :disabled="clickingButton === 'reset'">
-                {{ clickingButton === 'reset' ? '...' : '确认' }}
-              </button>
-              <button class="text-xs text-ink-muted px-2 py-1" @click="showResetConfirm = false">取消</button>
-            </template>
-          </div>
+          <button class="btn-primary text-xs tracking-wider" @click="goToGame">继续冒险 →</button>
         </div>
       </div>
+
+      <!-- ===== 覆盖确认弹窗 ===== -->
+      <Teleport to="body">
+        <div v-if="pendingModule" class="fixed inset-0 bg-black/30 z-50 flex items-center justify-center" @click.self="pendingModule = null">
+          <CardWrapper class="w-[420px] p-6">
+            <h3 class="text-lg text-ink-primary mb-3">⚠️ 开始新冒险将覆盖当前进度</h3>
+            <div class="space-y-3 mb-4 text-sm text-ink-secondary">
+              <p>当前冒险「<strong>{{ sessionStore.currentSession?.name }}</strong>」仍在进行中。</p>
+              <div class="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800 space-y-1">
+                <p>· 当前进度将在开始新游戏前<strong>自动存档</strong></p>
+                <p>· 新模组「<strong>{{ pendingModule.name }}</strong>」将覆盖当前游戏</p>
+                <p>· 可通过存档页恢复之前的进度</p>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3">
+              <button class="btn-ghost text-sm" @click="pendingModule = null">取消</button>
+              <button class="btn-primary text-sm bg-amber-600 hover:bg-amber-700" @click="confirmNewGame">确认并开始新冒险</button>
+            </div>
+          </CardWrapper>
+        </div>
+      </Teleport>
 
       <!-- ===== 页面标题 ===== -->
       <div class="flex items-center gap-4 mb-2">
@@ -253,7 +286,7 @@ function avatarColor(index) {
         <div>
           <h2 class="text-xl text-ink-primary tracking-wider">新建冒险</h2>
           <p class="text-xs text-ink-muted tracking-wide">
-            {{ sessionStore.isGameActive ? '当前世界正在运行 — 请先完成或重置当前游戏' : '选择模组或创建自定义跑团会话' }}
+            选择模组或创建自定义跑团会话
           </p>
         </div>
       </div>
@@ -282,10 +315,7 @@ function avatarColor(index) {
         <div class="grid grid-cols-3 gap-4">
           <CardWrapper
             v-for="mod in filteredModules" :key="mod.id"
-            class="flex flex-col transition-all"
-            :class="sessionStore.isGameActive
-              ? 'p-5 opacity-40'
-              : 'p-5 cursor-pointer group'"
+            class="flex flex-col transition-all p-5 cursor-pointer group"
           >
             <h4 class="text-base text-ink-primary font-medium leading-tight mb-2">{{ mod.name }}</h4>
             <div class="flex gap-2 mb-2">
@@ -303,16 +333,14 @@ function avatarColor(index) {
               <span class="text-[10px] text-ink-muted truncate max-w-[140px]">{{ mod.setting }}</span>
               <button
                 class="text-xs px-3 py-1 rounded-lg transition-all min-w-[80px]"
-                :class="sessionStore.isGameActive
-                  ? 'bg-[#E8E2D8] text-ink-muted cursor-not-allowed'
-                  : clickingButton === mod.id
-                    ? 'bg-[#5A5550] text-[#F5F0E8] cursor-wait'
-                    : 'bg-[#E8E2D8] text-[#5A5550] hover:bg-[#5A5550] hover:text-[#F5F0E8] cursor-pointer'"
-                :disabled="sessionStore.isGameActive || clickingButton !== null"
+                :class="clickingButton === mod.id
+                  ? 'bg-[#5A5550] text-[#F5F0E8] cursor-wait'
+                  : 'bg-[#E8E2D8] text-[#5A5550] hover:bg-[#5A5550] hover:text-[#F5F0E8] cursor-pointer'"
+                :disabled="clickingButton !== null"
                 @click.stop="openInitModal(mod)"
               >
                 <span v-if="clickingButton === mod.id" class="inline-block w-3 h-3 border border-[#F5F0E8] border-t-transparent rounded-full animate-spin mr-1 align-middle" />
-                {{ sessionStore.isGameActive ? '已锁定' : clickingButton === mod.id ? '加载中' : '使用模组 →' }}
+                {{ clickingButton === mod.id ? '加载中' : '使用模组 →' }}
               </button>
             </div>
           </CardWrapper>
@@ -325,16 +353,16 @@ function avatarColor(index) {
 
       <!-- ===== 自定义创建表单 + 队伍头像区 ===== -->
       <div class="grid grid-cols-3 gap-6">
-        <CardWrapper class="col-span-2 p-6" :class="{ 'opacity-50': sessionStore.isGameActive }">
+        <CardWrapper class="col-span-2 p-6">
           <h3 class="text-sm text-ink-secondary tracking-wide mb-4">自定义冒险</h3>
           <div class="space-y-4">
             <div>
               <label class="block text-xs text-ink-muted mb-1">冒险名称</label>
-              <input v-model="formData.name" class="input-parchment w-full" placeholder="输入冒险名称..." :disabled="sessionStore.isGameActive" @keyup.enter="createAdventure" />
+              <input v-model="formData.name" class="input-parchment w-full" placeholder="输入冒险名称..." @keyup.enter="createAdventure" />
             </div>
             <div>
               <label class="block text-xs text-ink-muted mb-1">规则系统</label>
-              <select v-model="formData.system" class="input-parchment w-full" :disabled="sessionStore.isGameActive">
+              <select v-model="formData.system" class="input-parchment w-full">
                 <option>D&D 5E</option>
                 <option>Pathfinder 2E</option>
                 <option>COC 7th</option>
@@ -344,11 +372,11 @@ function avatarColor(index) {
             </div>
             <div>
               <label class="block text-xs text-ink-muted mb-1">冒险简介</label>
-              <textarea v-model="formData.description" class="input-parchment w-full h-20 resize-none" placeholder="简要描述冒险背景..." :disabled="sessionStore.isGameActive" />
+              <textarea v-model="formData.description" class="input-parchment w-full h-20 resize-none" placeholder="简要描述冒险背景..." />
             </div>
             <button
               class="btn-primary w-full text-sm tracking-wider"
-              :disabled="!formData.name.trim() || sessionStore.isGameActive || clickingButton === 'custom'"
+              :disabled="!formData.name.trim() || clickingButton === 'custom'"
               @click="createAdventure"
             >
               {{ clickingButton === 'custom' ? '创建中...' : '创建新冒险' }}

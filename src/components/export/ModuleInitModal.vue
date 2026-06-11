@@ -9,6 +9,7 @@ import { useUIStore } from '../../stores/ui.js'
 import { useModuleContextStore } from '../../stores/moduleContext.js'
 import { useDayCycleStore } from '../../stores/dayCycle.js'
 import { useCustomAttrsStore } from '../../stores/customAttrs.js'
+import { streamChat, getApiKey } from '../../services/deepseek.js'
 import CardWrapper from '../common/CardWrapper.vue'
 import CompassLogo from '../common/CompassLogo.vue'
 import ProgressBar from '../common/ProgressBar.vue'
@@ -200,13 +201,121 @@ async function startInitialization() {
   // 自动加载已有角色
   await characterStore.loadCharacters(sessionId)
 
-  // 如果没有角色且有预置角色，自动导入预置角色
+  // 如果没有角色且有预置角色，自动导入预置角色（先AI分析再创建）
   if (characterStore.characters.length === 0 && presetChars.value.length > 0) {
     for (const charData of presetChars.value) {
+      await enrichCharacterBackground(charData)
       await characterStore.createCharacter(sessionId, charData)
     }
     await characterStore.loadCharacters(sessionId)
   }
+}
+
+/** AI 分析角色生成个性化背景故事 */
+async function enrichCharacterBackground(charData) {
+  const hasApiKey = !!getApiKey()
+  if (!hasApiKey) {
+    charData.background = `${charData.race} ${charData.class}，踏上冒险之路。`
+    return charData
+  }
+  const mod = props.module
+  const surnameInfo = charData.surnameMeaning ? `\n- 特殊家族背景：${charData.surnameMeaning}` : ''
+  const prompt = `你是一位 TRPG 角色背景创作助手。请为以下角色创作一句简短的背景设定（30-50字），描述其身份来历和冒险动机：
+
+角色名：${charData.name}
+种族：${charData.race}
+职业：${charData.class}
+${charData.pathway ? '途径：' + charData.pathway : ''}${surnameInfo}
+模组：${mod.name}（${mod.system}）
+
+只需返回一句简洁的背景描述（30-50字），不要加引号或额外说明。`
+  const messages = [
+    { role: 'system', content: '你是 TRPG 角色背景创作助手。只返回一句简短背景描述。' },
+    { role: 'user', content: prompt }
+  ]
+  let result = ''
+  try {
+    await streamChat(messages, {
+      onToken: (token) => { result += token },
+      onDone: () => {},
+      onError: () => { result = '' }
+    })
+    charData.background = result.trim() || `${charData.race} ${charData.class}，踏上冒险之路。`
+  } catch {
+    charData.background = `${charData.race} ${charData.class}，踏上冒险之路。`
+  }
+  return charData
+}
+
+/** 创建角色并直接开始游戏（带表单验证） */
+async function createAndStart() {
+  aiErrorMsg.value = ''
+  const form = newCharForm.value
+  const cc = charCreation.value
+
+  // 验证必填字段
+  if (!form.name || !form.name.trim()) {
+    aiErrorMsg.value = '请输入角色名字'
+    return
+  }
+  if (!form.class) {
+    aiErrorMsg.value = '请选择职业'
+    return
+  }
+  if (!form.race) {
+    aiErrorMsg.value = '请选择种族'
+    return
+  }
+  // 属性计算和途径设置
+  const base = cc.attrBase || 3
+  for (const attr of (cc.attributes || [])) {
+    form[attr.key] = currentCombinedAttrs.value[attr.key] ?? (attr.default || base)
+  }
+  if (classToPathway.value && form.class) {
+    form.pathway = classToPathway.value[form.class] || ''
+  }
+  if (cc.fixedLevel != null) {
+    form.level = cc.fixedLevel
+  }
+  // 检查特殊姓氏
+  const nameParts = form.name.split('·')
+  if (nameParts.length >= 2) {
+    const lastName = nameParts[nameParts.length - 1]
+    const specialSurnames = cc.specialSurnames || {}
+    if (specialSurnames[lastName]) {
+      form.surnameMeaning = specialSurnames[lastName]
+    }
+  }
+  // AI 分析角色背景
+  aiErrorMsg.value = ''
+  try {
+    await enrichCharacterBackground(form)
+    await characterStore.createCharacter(sessionStore.currentSessionId, form)
+    await characterStore.loadCharacters(sessionStore.currentSessionId)
+  } catch (e) {
+    aiErrorMsg.value = '创建角色失败: ' + (e.message || e)
+    return
+  }
+
+  // 选中新创建的角色
+  const newChar = characterStore.characters[characterStore.characters.length - 1]
+  if (newChar) {
+    const s = new Set(selectedCharIds.value)
+    s.add(newChar.id)
+    selectedCharIds.value = s
+  }
+
+  newCharForm.value = createDefaultForm()
+  showCreateForm.value = false
+  // 直接开始冒险
+  await startAdventure()
+}
+
+/** 选中已有角色并开始游戏 */
+async function startWithExistingChar(charId) {
+  const s = new Set([charId])
+  selectedCharIds.value = s
+  await startAdventure()
 }
 
 /** 切换角色选中 */
@@ -244,6 +353,8 @@ async function createNewCharacter() {
       newCharForm.value.surnameMeaning = specialSurnames[lastName]
     }
   }
+  // AI 分析角色背景
+  await enrichCharacterBackground(newCharForm.value)
   await characterStore.createCharacter(sessionStore.currentSessionId, newCharForm.value)
   await characterStore.loadCharacters(sessionStore.currentSessionId)
 
@@ -317,6 +428,11 @@ function openCreateForm() {
 
 /** 完成初始化，开始冒险 */
 async function startAdventure() {
+  // 禁止无角色进入游戏
+  if (characterStore.characters.length === 0) {
+    aiErrorMsg.value = '请先创建或选择至少一个角色再开始冒险'
+    return
+  }
   try {
   const sessionId = sessionStore.currentSessionId
   const mod = props.module
@@ -379,6 +495,7 @@ function charColor(name) {
         <!-- 顶部标题栏 -->
         <div class="flex items-center justify-between px-6 py-4 border-b border-[#E8E2D8]">
           <div class="flex items-center gap-3">
+            <button v-if="phase === 'character_select'" class="btn-ghost text-xs px-2 py-1 mr-1" @click="emit('close')">← 返回</button>
             <CompassLogo />
             <div>
               <h2 class="text-lg text-ink-primary font-medium">{{ module.name }}</h2>
@@ -460,11 +577,15 @@ function charColor(name) {
                       · Lv.{{ char.level || char.sequence9 ? '序列' : '' }}{{ char.level }}
                     </p>
                     <!-- 属性缩略 -->
-                    <div class="flex gap-2 mt-1">
+                    <div class="flex gap-2 mt-1 mb-2">
                       <span class="text-[9px] text-ink-muted" v-if="char.str">力{{ char.str }}</span>
                       <span class="text-[9px] text-ink-muted" v-if="char.dex">敏{{ char.dex }}</span>
                       <span class="text-[9px] text-ink-muted" v-if="char.int">智{{ char.int }}</span>
                     </div>
+                    <button
+                      class="text-[10px] w-full py-1 rounded border border-[#5A5550]/30 text-[#5A5550] hover:bg-[#5A5550] hover:text-[#F5F0E8] transition-colors"
+                      @click.stop="startWithExistingChar(char.id)"
+                    >加入冒险</button>
                   </div>
                 </div>
               </div>
@@ -581,31 +702,15 @@ function charColor(name) {
                 <p class="text-[9px] text-ink-muted">
                   「{{ props.module.name }}」· 职业和种族决定属性分配，悬停选项预览雷达图
                 </p>
-                <button class="btn-primary text-xs w-full" @click="createNewCharacter">创建并选中</button>
+                <button class="btn-primary text-sm w-full py-2.5 tracking-wider" @click="createAndStart">以此角色加入游戏</button>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 底部操作栏 -->
-        <div class="px-6 py-4 border-t border-[#E8E2D8] flex justify-between items-center">
-          <div>
-            <span v-if="phase === 'init'" class="text-xs text-ink-muted">
-              正在准备冒险...
-            </span>
-          </div>
-          <div class="flex gap-3">
-            <button class="btn-ghost text-sm" @click="emit('close')">
-              {{ phase === 'character_select' ? '返回' : '取消' }}
-            </button>
-            <button
-              v-if="phase === 'character_select'"
-              class="btn-primary text-sm tracking-wider"
-              @click="startAdventure"
-            >
-              开始冒险！
-            </button>
-          </div>
+        <!-- 底部提示区 -->
+        <div v-if="aiErrorMsg" class="px-6 py-3 border-t border-[#E8E2D8]">
+          <p class="text-xs text-red-500 text-center">{{ aiErrorMsg }}</p>
         </div>
       </CardWrapper>
     </div>

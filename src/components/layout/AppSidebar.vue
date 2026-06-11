@@ -33,7 +33,8 @@ async function navigateTo(key) {
       await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
         moduleName: moduleCtxStore.moduleName,
         characterName: characterStore.currentCharacter?.name || '',
-        dayCount: dayCycle.dayCount
+        dayCount: dayCycle.dayCount,
+        saveType: 'auto'
       })
     } catch (e) { /* 静默 */ }
   }
