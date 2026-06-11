@@ -14,6 +14,24 @@ export const useCharacterStore = defineStore('character', () => {
   // 默认属性值
   const defaultStats = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10, hp: 10, maxHp: 10, mp: 5, maxMp: 5 }
 
+  /** 为角色初始化技能表 */
+  function initSkillSheet() {
+    const skills = {}
+    const list = {
+      athletics:{name:'运动',attr:'str'},acrobatics:{name:'杂技',attr:'dex'},
+      sleightOfHand:{name:'巧手',attr:'dex'},stealth:{name:'隐匿',attr:'dex'},
+      arcana:{name:'奥秘',attr:'int'},history:{name:'历史',attr:'int'},
+      investigation:{name:'调查',attr:'int'},nature:{name:'自然',attr:'int'},
+      religion:{name:'宗教',attr:'int'},animalHandling:{name:'驯兽',attr:'wis'},
+      insight:{name:'洞察',attr:'wis'},medicine:{name:'医药',attr:'wis'},
+      perception:{name:'察觉',attr:'wis'},survival:{name:'生存',attr:'wis'},
+      deception:{name:'欺瞒',attr:'cha'},intimidation:{name:'威吓',attr:'cha'},
+      performance:{name:'表演',attr:'cha'},persuasion:{name:'游说',attr:'cha'}
+    }
+    for (const [k,v] of Object.entries(list)) skills[k] = {...v, level:'untrained'}
+    return skills
+  }
+
   /** 加载指定会话的角色 */
   async function loadCharacters(sessionId) {
     characters.value = await db.characters.where('sessionId').equals(sessionId).toArray()
@@ -33,6 +51,8 @@ export const useCharacterStore = defineStore('character', () => {
       avatar: raw.avatar || '',
       equipment: raw.equipment || [],
       skills: raw.skills || [],
+      skillSheet: raw.skillSheet || initSkillSheet(),
+      growth: raw.growth || { xp: 0, level: raw.level || 1, skillPoints: 0 },
       npcAffinity: raw.npcAffinity || {},
       status: raw.status || '正常',
       class: raw.class || '战士',

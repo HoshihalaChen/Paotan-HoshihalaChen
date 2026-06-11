@@ -18,9 +18,6 @@ import { useBackup } from '../composables/useBackup.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
 import DiceIcon from '../components/common/DiceIcon.vue'
 import ProgressBar from '../components/common/ProgressBar.vue'
-import DiceStatsChart from '../components/visualization/DiceStatsChart.vue'
-import StatusRadar from '../components/visualization/StatusRadar.vue'
-import TimelineChart from '../components/visualization/TimelineChart.vue'
 import CombatStats from '../components/visualization/CombatStats.vue'
 import ExportDialog from '../components/export/ExportDialog.vue'
 import SaveSlotDialog from '../components/export/SaveSlotDialog.vue'
@@ -60,8 +57,10 @@ const selectedCharId = ref(null)
 
 // 可视化面板
 const showStats = ref(false)
-const showExport = ref(false)  // 保留但默认隐藏
+const dataTab = ref('角色')
+const showExport = ref(false)
 const showSaveDialog = ref(false)
+const combatState = ref(null)  // 当前战斗状态
 
 // 游戏模式：引导模式(默认) / 自由模式
 const gameMode = ref('guided')  // 'guided' | 'free'
@@ -602,7 +601,7 @@ function roleLabel(role) {
           {{ showCombat ? '隐藏' : '⚔️' }} 战斗面板
         </button>
         <button class="btn-ghost text-xs" @click="showStats = !showStats">
-          {{ showStats ? '隐藏' : '显示' }}数据统计
+          📊 数据
         </button>
         <button class="btn-ghost text-xs" @click="showSaveDialog = true">
           💾 手动存档
@@ -932,21 +931,82 @@ function roleLabel(role) {
     </div>
   </div>
 
-    <!-- 数据可视化面板 -->
-    <div v-if="showStats" class="space-y-4 fade-in">
-      <div class="grid grid-cols-2 gap-4">
-        <DiceStatsChart
-          :session-id="sessionStore.currentSessionId"
-          :refresh-key="vizRefreshKey"
-        />
-        <StatusRadar
-          :character="characterStore.currentCharacter"
-        />
+    <!-- 数据面板（底部展开） -->
+    <div v-if="showStats" class="fade-in border-t border-[#E8E2D8] bg-[#FAF7F2]">
+      <div class="max-w-5xl mx-auto p-4 space-y-4">
+        <div class="flex gap-3">
+          <button
+            v-for="tab in ['角色', '技能', '成长', '战斗']"
+            :key="tab"
+            class="text-xs px-3 py-1 rounded-full"
+            :class="dataTab === tab ? 'bg-[#5A5550] text-[#F5F0E8]' : 'text-ink-muted hover:bg-[#E8E2D8]'"
+            @click="dataTab = tab"
+          >{{ tab }}</button>
+        </div>
+
+        <!-- 角色面板 -->
+        <div v-if="dataTab === '角色'" class="grid grid-cols-3 gap-3">
+          <div v-for="c in characterStore.characters" :key="c.id" class="bg-white rounded-lg p-3 border border-[#E8E2D8]">
+            <div class="flex items-center gap-2 mb-2">
+              <div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs" :style="{ backgroundColor: `hsl(${c.name?.charCodeAt(0)||0 % 360},25%,50%)` }">{{ c.name?.charAt(0) }}</div>
+              <div>
+                <p class="text-xs font-medium text-ink-primary">{{ c.name }}</p>
+                <p class="text-[9px] text-ink-muted">{{ c.race }} {{ c.class }} Lv.{{ c.level }}</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-1 text-[9px]">
+              <span>HP {{ c.hp }}/{{ c.maxHp }}</span>
+              <span>力 {{ c.str }}</span><span>敏 {{ c.dex }}</span>
+              <span>体 {{ c.con }}</span><span>智 {{ c.int }}</span>
+              <span>感 {{ c.wis }}</span><span>魅 {{ c.cha }}</span>
+              <span v-if="c.status !== '正常'" class="text-red-500 col-span-3">{{ c.status }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 技能面板 -->
+        <div v-if="dataTab === '技能' && characterStore.currentCharacter" class="grid grid-cols-4 gap-2">
+          <div v-for="(skill, key) in (characterStore.currentCharacter.skillSheet || {})" :key="key" class="bg-white rounded p-2 border border-[#E8E2D8] text-[9px]">
+            <div class="flex justify-between">
+              <span class="font-medium text-ink-primary">{{ skill.name }}</span>
+              <span class="text-ink-muted">{{ skill.attr?.toUpperCase() }}</span>
+            </div>
+            <div class="flex justify-between mt-1">
+              <span class="text-[8px] px-1 rounded" :class="skill.level === 'master' ? 'bg-amber-100 text-amber-700' : skill.level === 'expert' ? 'bg-blue-50 text-blue-600' : skill.level === 'proficient' ? 'bg-green-50 text-green-600' : 'text-ink-muted/50'">{{ {untrained:'未受训',proficient:'熟练',expert:'专精',master:'大师'}[skill.level] }}</span>
+              <span class="text-ink-primary font-medium">{{ (Math.floor((characterStore.currentCharacter[skill.attr]-10)/2) + (characterStore.currentCharacter.level ? Math.floor((characterStore.currentCharacter.level+3)/4) : 0) + ({untrained:0,proficient:2,expert:4,master:6}[skill.level]||0)) >= 0 ? '+' : '' }}{{ Math.floor((characterStore.currentCharacter[skill.attr]-10)/2) + (characterStore.currentCharacter.level ? Math.floor((characterStore.currentCharacter.level+3)/4) : 0) + ({untrained:0,proficient:2,expert:4,master:6}[skill.level]||0) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 成长面板 -->
+        <div v-if="dataTab === '成长' && characterStore.currentCharacter" class="space-y-3">
+          <div class="bg-white rounded-lg p-3 border border-[#E8E2D8]">
+            <div class="flex justify-between text-xs mb-1">
+              <span>等级 {{ characterStore.currentCharacter.growth?.level || characterStore.currentCharacter.level || 1 }}</span>
+              <span>XP {{ characterStore.currentCharacter.growth?.xp || 0 }} / 下一级</span>
+            </div>
+            <ProgressBar :value="characterStore.currentCharacter.growth?.xp || 0" :max="300 * Math.pow(1.5, (characterStore.currentCharacter.level||1)-1)" :color="'#5A7A5A'" :show-value="false" />
+            <p class="text-[9px] text-ink-muted mt-2">可用技能点: <strong>{{ characterStore.currentCharacter.growth?.skillPoints || 0 }}</strong>（升级获得，可提升属性或技能熟练度）</p>
+          </div>
+        </div>
+
+        <!-- 战斗面板 -->
+        <div v-if="dataTab === '战斗'" class="space-y-2">
+          <div v-if="!combatState?.isActive" class="bg-white rounded-lg p-4 text-center border border-[#E8E2D8]">
+            <p class="text-xs text-ink-muted">暂无进行中的战斗</p>
+            <p class="text-[10px] text-ink-muted/50 mt-1">由 AI GM 发起战斗后，战斗状态将在此显示</p>
+          </div>
+          <div v-else class="space-y-2">
+            <div class="bg-white rounded-lg p-3 border border-[#E8E2D8] text-xs">
+              <div class="flex justify-between mb-1"><span>回合 {{ combatState.round }}</span><span>{{ combatState.isActive ? '进行中' : '已结束' }}</span></div>
+              <div v-for="p in combatState.participants" :key="p.id" class="flex justify-between py-1 border-b border-[#E8E2D8]/50 last:border-0">
+                <span>{{ p.type === 'player' ? '🧑' : '👹' }} {{ p.name }}</span>
+                <span :class="p.hp <= p.maxHp/2 ? 'text-red-500' : ''">HP {{ p.hp }}/{{ p.maxHp }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-      <TimelineChart
-        :session-id="sessionStore.currentSessionId"
-        :refresh-key="vizRefreshKey"
-      />
     </div>
 
     <!-- 导出对话框 -->
