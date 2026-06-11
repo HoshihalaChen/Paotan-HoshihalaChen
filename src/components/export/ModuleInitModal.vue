@@ -177,17 +177,13 @@ async function startInitialization() {
     type: 'system'
   })
 
-  // Step 4: 调用 AI 生成开场叙述
-  phase.value = 'ai_generating'
+  // Step 4: 后台静默生成开场叙述（不展示给用户）
+  initProgress.value = '正在准备冒险...'
 
   const hasApiKey = !!getApiKey()
   if (!hasApiKey) {
-    // 无 API Key 时使用本地生成的默认开场
-    initProgress.value = '未检测到 API Key，使用本地默认开场...'
     await simulateLocalNarration()
   } else {
-    // 有 API Key，调用流式 API
-    initProgress.value = 'AI 正在构思冒险开场...'
     await generateAINarration(sessionId)
   }
 
@@ -235,14 +231,7 @@ async function simulateLocalNarration() {
     await nextTick()
   }
 
-  await chatStore.addMessage({
-    sessionId: sessionStore.currentSessionId,
-    role: 'assistant',
-    content: aiNarration.value,
-    type: 'chat'
-  })
-
-  phase.value = 'ai_done'
+  // 不存入聊天记录，等进入游戏时再由 startAdventure 添加
 }
 
 /** 调用 DeepSeek API 生成 AI 开场叙述 */
@@ -280,7 +269,11 @@ ${(mod.locations || []).slice(0, 4).map(l => `- ${l.name}：${l.description}`).j
 2. 用生动的感官细节描绘当前场景——玩家看到什么、听到什么、闻到什么
 3. 迅速建立故事冲突或悬念——不要平铺直叙
 4. 引入至少一个NPC或事件来驱动故事
-5. **最重要**：结尾必须给玩家一个明确的选择或行动提示，如「你要怎么做？」「你选择哪条路？」「你注意到___，你想调查吗？」
+5. **最重要**：结尾必须另起一行，以数字编号给出 2-3 个具体的行动选项，格式如下：
+1. [选项描述]
+2. [选项描述]
+3. [选项描述]
+确保每个选项是玩家在当前场景下可以执行的明确行动，而不是泛泛的提问。
 
 语气要有画面感和戏剧张力。使用中文。控制在400-600字。`
 
@@ -297,13 +290,7 @@ ${(mod.locations || []).slice(0, 4).map(l => `- ${l.name}：${l.description}`).j
     },
     onDone: async () => {
       phase.value = 'ai_done'
-      // 保存 AI 开场到聊天记录
-      await chatStore.addMessage({
-        sessionId,
-        role: 'assistant',
-        content: aiNarration.value,
-        type: 'chat'
-      })
+      // 不存入聊天记录，等进入游戏时再由 startAdventure 添加
     },
     onError: async (err) => {
       aiErrorMsg.value = `AI 生成失败: ${err.message}，使用默认开场`
@@ -414,48 +401,26 @@ function openCreateForm() {
 async function startAdventure() {
   try {
   const sessionId = sessionStore.currentSessionId
+  const mod = props.module
 
-  // 添加角色加入的系统消息
+  // Step 1: 展示模组 + 角色基本信息（名字、种族、职业，不含属性）
   const selectedChars = characterStore.characters.filter(c => selectedCharIds.value.has(c.id))
-  const charNames = selectedChars.map(c => `${c.name}(${c.race} ${c.class})`).join('、')
+  const charLines = selectedChars.map(c => `- ${c.name}（${c.race} ${c.class}）`).join('\n')
 
-  if (charNames) {
+  await chatStore.addMessage({
+    sessionId,
+    role: 'system',
+    content: `[模组] 《${mod.name}》· ${mod.system}\n[冒险者]\n${charLines || '（无角色）'}`,
+    type: 'system'
+  })
+
+  // Step 2: 输出预生成的开场叙述（作为 DM 消息）
+  if (aiNarration.value) {
     await chatStore.addMessage({
       sessionId,
-      role: 'system',
-      content: `冒险者队伍：${charNames}，准备踏上冒险之旅。`,
-      type: 'system'
-    })
-  }
-
-  // 如果有 API Key，让 AI 基于选中的角色给出进一步的引导
-  const hasApiKey = !!getApiKey()
-  if (hasApiKey && charNames) {
-    phase.value = 'ai_generating'
-    initProgress.value = 'AI 正在根据你的队伍生成定制化引导...'
-
-    const guideMessages = [
-      { role: 'system', content: `你的玩家选择了以下角色：${charNames}。请针对这些角色的特点和能力，给出接下来具体的冒险指引和初始行动选项。控制在150字以内。` },
-      { role: 'user', content: `我选择的队伍是：${charNames}。请引导我们开始冒险。` }
-    ]
-
-    let guideText = ''
-    let abortController = new AbortController()
-
-    await streamChat(guideMessages, {
-      onToken: (token) => { guideText += token },
-      onDone: async () => {
-        if (guideText.trim()) {
-          await chatStore.addMessage({
-            sessionId,
-            role: 'assistant',
-            content: guideText,
-            type: 'chat'
-          })
-        }
-      },
-      onError: () => { /* 静默处理 */ },
-      signal: abortController.signal
+      role: 'assistant',
+      content: aiNarration.value,
+      type: 'chat'
     })
   }
 
@@ -544,50 +509,21 @@ function charColor(name) {
 
         <!-- 主体内容区 -->
         <div class="flex-1 overflow-y-auto p-6 space-y-4">
-          <!-- 初始化进度 + AI 叙述 -->
-          <div v-if="phase === 'init' || phase === 'ai_generating'" class="space-y-4">
+          <!-- 初始化进度 -->
+          <div v-if="phase === 'init'" class="space-y-4">
             <div class="flex items-center gap-3 text-sm text-ink-secondary">
-              <DiceIcon :size="20" :rolling="phase === 'ai_generating'" />
+              <DiceIcon :size="20" />
               <span>{{ initProgress }}</span>
-            </div>
-
-            <!-- AI 流式输出区 -->
-            <div
-              v-if="aiNarration"
-              class="bg-[#F5F0E8] rounded-lg p-4 max-h-[300px] overflow-y-auto"
-            >
-              <div class="text-[10px] text-ink-muted mb-2">DM 开场叙述</div>
-              <div class="text-sm text-ink-primary leading-relaxed whitespace-pre-wrap">
-                {{ aiNarration }}
-                <span v-if="phase === 'ai_generating'" class="cursor-blink" />
-              </div>
             </div>
 
             <!-- 错误提示 -->
             <div v-if="aiErrorMsg" class="bg-red-50 text-red-500 text-xs p-3 rounded-lg">
               {{ aiErrorMsg }}
             </div>
-
-            <!-- 等待中 -->
-            <div v-if="!aiNarration && phase === 'ai_generating'" class="flex flex-col items-center py-8 text-ink-muted">
-              <DiceIcon :size="48" :rolling="true" class="opacity-30 mb-3" />
-              <p class="text-sm">AI 正在创作冒险开场...</p>
-              <p class="text-xs mt-1">这可能需要几秒钟</p>
-            </div>
           </div>
 
           <!-- 角色选择 -->
           <div v-if="phase === 'character_select' || phase === 'ai_done' || phase === 'ready'">
-            <!-- AI 开场叙事预览（可折叠） -->
-            <details v-if="aiNarration" class="mb-4" open>
-              <summary class="text-sm text-ink-secondary cursor-pointer tracking-wide">
-                DM 开场叙述 {{ phase === 'character_select' ? '(已生成)' : '' }}
-              </summary>
-              <div class="bg-[#F5F0E8] rounded-lg p-4 mt-2 max-h-[200px] overflow-y-auto">
-                <div class="text-sm text-ink-primary leading-relaxed whitespace-pre-wrap">{{ aiNarration }}</div>
-              </div>
-            </details>
-
             <h3 class="text-sm text-ink-secondary tracking-wide">
               选择冒险者角色
               <span class="text-xs text-ink-muted ml-2">
@@ -757,8 +693,8 @@ function charColor(name) {
         <!-- 底部操作栏 -->
         <div class="px-6 py-4 border-t border-[#E8E2D8] flex justify-between items-center">
           <div>
-            <span v-if="phase === 'ai_generating'" class="text-xs text-ink-muted">
-              {{ getApiKey() ? 'AI 正在生成内容...' : '使用本地默认开场...' }}
+            <span v-if="phase === 'init'" class="text-xs text-ink-muted">
+              正在准备冒险...
             </span>
           </div>
           <div class="flex gap-3">
