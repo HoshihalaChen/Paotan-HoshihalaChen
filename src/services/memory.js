@@ -8,15 +8,18 @@
  * 4. 强制问句结尾 - 每条 AI 回复必须以至少一个问句结束
  * 5. 选项按钮格式 - AI 必须提供 2-4 个编号选项供玩家点击
  * 6. 滑动窗口 - 保留最近消息 + 关键摘要
+ * 7. 规则注入 - 根据模组系统自动加载对应规则书
  */
+import { getRulebook, formatRulebookForPrompt } from '../../modules/index.js'
 
 const MAX_HISTORY_MESSAGES = 30
 
 /**
- * 构建系统提示词 - 统一骰子 + 强制问句 + 选项按钮
+ * 构建系统提示词 - 统一骰子 + 强制问句 + 选项按钮 + 动态规则
+ * @param {object} options.rules - 可选，预加载的规则书对象
  */
-export function buildSystemPrompt(options) {
-  const { session, characters, worldEntries, summary, moduleContextText } = options
+export async function buildSystemPrompt(options) {
+  const { session, characters, worldEntries, summary, moduleContextText, rules, gameMode } = options
 
   // 推断骰子系统
   const diceSystem = getDiceSystemInfo(session?.system)
@@ -45,6 +48,11 @@ export function buildSystemPrompt(options) {
 **描述**：${session?.description || '史诗冒险'}
 
 `
+  }
+
+  // ========== 规则书注入（根据模组系统动态加载） ==========
+  if (rules) {
+    prompt += formatRulebookForPrompt(rules)
   }
 
   // ========== 统一骰子检定系统 ==========
@@ -185,23 +193,41 @@ export function buildSystemPrompt(options) {
     prompt += `\n# 先前剧情摘要\n${summary}\n`
   }
 
-  // ========== 最终指令 ==========
-  prompt += `\n# ⚠️ 当前任务 — 立即回复
-根据以上设定，写出你的 DM 叙述。
+  // ========== 最终指令（根据游戏模式调整） ==========
+  if (gameMode === 'free') {
+    // 自由模式：严禁输出编号选项，描述场景可交互元素
+    prompt += `\n# ⚠️⚠️ 当前为【自由探索模式】— 严禁输出编号选项！
+
+**🚫 绝对禁止的行为**：
+- 禁止在回复末尾出现任何形式的编号列表（如 1. xxx  2. xxx  3. xxx）
+- 禁止使用数字编号引导玩家选择
+- 禁止以任何格式提供选项列表
+
+**✅ 正确的回复方式**：
+1. 用生动的感官细节描绘当前场景——玩家看到什么、听到什么、闻到什么
+2. 明确描述场景中存在的所有可交互目标：NPC、物品、环境特征、敌人等
+3. 在关键元素后用括号标注可能的交互方式，例如：
+   「吧台后的老板(可交谈/可询问传闻)正擦拭着酒杯」
+   「角落一扇破旧的木门(可调查/可撬锁/可踢开)」
+4. 结尾用一句开放式引导语启发玩家自主决策（如"你打算怎么做？"）
+
+**检定格式**：
+⚡ 检定请求：[属性](技能) | 难度：DC值 | 成功/失败后果 | 询问「是否进行检定？(.yes/.no)」`
+  } else {
+    // 引导模式（默认）：强制选项按钮
+    prompt += `\n# ⚠️ 当前为【引导模式】— 必须提供选项！
+
+根据以上设定和规则，写出你的 DM 叙述。
 
 **四条铁律（必须全部遵守）**：
 1. 最后一句话必须是问句（以？结尾）—— 无例外
-2. 问句后必须提供 2-3 个编号选项（1. xxx / 2. xxx / 3. xxx）—— 纯游戏结算回复除外
+2. 问句后必须提供 2-3 个编号选项，格式如下：
+   1. [选项描述]
+   2. [选项描述]
+   3. [选项描述]
 3. 选项必须具体可操作 —— 不能是「做点什么」这种模糊表述
-4. 检定使用统一格式：⚡ 检定请求：[属性](技能) | 难度：DC值 | 成功/失败后果 | 询问「是否进行检定？(.yes/.no)」
-
-**回复检查清单（在输出前自查）**：
-□ 我是否以问句结尾？
-□ 我是否提供了至少 2 个编号选项？
-□ 每个选项是否具体可操作？
-□ 如果不是纯结算回复，我是否包含了选项？
-□ 检定请求是否包含难度等级和DC值？
-□ 是否询问了「是否进行检定？」`
+4. 检定使用统一格式：⚡ 检定请求：[属性](技能) | 难度：DC值 | 成功/失败后果 | 询问「是否进行检定？」（玩家将在右侧面板投骰）`
+  }
 
   return prompt
 }

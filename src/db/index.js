@@ -2,13 +2,13 @@ import Dexie from 'dexie'
 
 /** 数据库版本标记 — 变更时自动清理旧缓存 */
 const DB_VERSION_KEY = 'paotuan_db_version'
-const CURRENT_DB_VERSION = 1
+const CURRENT_DB_VERSION = 2
 
 class PaotuanDB extends Dexie {
   constructor() {
     super('PaotuanDB')
 
-    this.version(3).stores({
+    this.version(4).stores({
       sessions: '++id, name, system, createdAt, updatedAt',
       characters: '++id, sessionId, name, class, race, level, createdAt',
       messages: '++id, sessionId, characterId, role, type, timestamp',
@@ -17,7 +17,7 @@ class PaotuanDB extends Dexie {
       diceLogs: '++id, sessionId, characterId, timestamp',
       mapData: '++id, sessionId',
       backups: '++id, sessionId, filename, createdAt',
-      archives: '++id, sessionId, characterId, moduleName, characterName, dayCount, createdAt',
+      archives: '++id, sessionId, characterId, moduleName, characterName, dayCount, createdAt, saveType',
     })
 
     this.sessions = this.table('sessions')

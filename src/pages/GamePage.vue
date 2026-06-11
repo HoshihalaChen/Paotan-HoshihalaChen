@@ -60,8 +60,38 @@ const selectedCharId = ref(null)
 
 // 可视化面板
 const showStats = ref(false)
-const showExport = ref(false)
+const showExport = ref(false)  // 保留但默认隐藏
 const showSaveDialog = ref(false)
+
+// 游戏模式：引导模式(默认) / 自由模式
+const gameMode = ref('guided')  // 'guided' | 'free'
+
+/** 获取最后一条 AI 消息文本（用于选项按钮解析 + 检定检测） */
+const lastAssistantMessage = computed(() => {
+  const msgs = chatStore.messages
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'assistant') return msgs[i].content
+  }
+  return ''
+})
+
+// 检定状态管理 — pendingCheck 是唯一判定来源
+const checkResponded = ref(false)
+const pendingCheck = computed(() => {
+  if (!lastAssistantMessage.value) return null
+  return parseCheckRequest()
+})
+// 是否可以进行检定：有待处理请求 + 未响应 + AI 未在流式输出
+const canRoll = computed(() =>
+  !!pendingCheck.value && !checkResponded.value && !chatStore.isStreaming
+)
+
+// 新检定请求出现 → 重置响应状态
+watch(() => pendingCheck.value?.dc, (newDc, oldDc) => {
+  if (newDc && newDc !== oldDc) {
+    checkResponded.value = false
+  }
+})
 const vizRefreshKey = ref(0)
 
 // 骰子面板 tab
@@ -132,6 +162,11 @@ async function generateOpeningNarrationIfNeeded() {
   const modSystem = mod.system || sessionStore.currentSession?.system || ''
   const modBackground = mod.background || ''
 
+  // 加载规则书
+  const { getRulebook, formatRulebookForPrompt } = await import('../../modules/index.js')
+  const rules = await getRulebook(modSystem)
+  const rulesText = formatRulebookForPrompt(rules)
+
   const hasSpecialSurnames = characters.some(c => c.surnameMeaning)
 
   const openingPrompt = `你是一位经验丰富的 TRPG 游戏主持人 (DM/GM)。
@@ -141,6 +176,8 @@ async function generateOpeningNarrationIfNeeded() {
 
 # 冒险背景
 ${modBackground}
+
+${rulesText}
 
 # 当前队伍冒险者
 ${charDescriptions}
@@ -285,14 +322,73 @@ async function goHome() {
   useUIStore().setPage('home')
 }
 
-/** 获取最后一条 AI 消息文本（用于选项按钮解析） */
-const lastAssistantMessage = computed(() => {
-  const msgs = chatStore.messages
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'assistant') return msgs[i].content
+// pendingCheck watcher 已在上面处理 unlock + reset
+
+/** 骰子投掷包装函数 — 拦截检定请求自动计算加权 */
+async function handleDiceRoll(expression) {
+  if (!sessionStore.currentSessionId) return
+
+  // 如果有待处理的检定请求，使用统一检定计算加权
+  const checkReq = pendingCheck.value
+  if (checkReq && !checkResponded.value) {
+    const char = selectedCharId.value
+      ? characterStore.characters.find(c => c.id === selectedCharId.value)
+      : characterStore.characters[0]
+    if (char) {
+      const result = performUnifiedCheck(char, checkReq.checkType, checkReq.difficulty)
+      await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
+      const msg = formatCheckResult(result)
+      await chatStore.addMessage({
+        sessionId: sessionStore.currentSessionId,
+        characterId: selectedCharId.value,
+        role: 'dice',
+        content: msg,
+        type: 'dice'
+      })
+      checkResponded.value = true
+      // 自动继续剧情
+      await continueAfterCheck(msg)
+      return
+    }
   }
-  return ''
-})
+
+  // 普通投骰（无检定请求或已响应）
+  const result = await roll(expression, sessionStore.currentSessionId, selectedCharId.value)
+  if (result) {
+    await chatStore.addMessage({
+      sessionId: sessionStore.currentSessionId,
+      characterId: selectedCharId.value,
+      role: 'dice',
+      content: result.detail,
+      type: 'dice'
+    })
+  }
+}
+
+/** 检定结果出来后自动继续剧情 */
+async function continueAfterCheck(diceMsg) {
+  const session = sessionStore.currentSession
+  if (!session) return
+  const characters = characterStore.characters
+  const worldEntries = worldStore.entries
+  const moduleContextText = moduleCtxStore.buildModuleContextText()
+
+  // 排除刚添加的骰子消息，AI 会从上下文窗口看到它
+  await startStream({
+    messages: chatStore.messages.slice(0, -1),
+    session,
+    characters,
+    worldEntries,
+    summary: null,
+    userMessage: `[检定结果] ${diceMsg}`,
+    moduleContextText,
+    gameMode: gameMode.value
+  })
+
+  // 保存 AI 回复
+  await chatStore.finishStreaming(sessionStore.currentSessionId, null)
+  await recordGameEvent()
+}
 
 /** 点击选项按钮 — 把选项文本当作玩家消息发送 */
 async function handleChoiceSelect(choiceText) {
@@ -315,7 +411,8 @@ async function handleChoiceSelect(choiceText) {
     worldEntries: worldStore.entries,
     summary: null,
     userMessage: choiceText,
-    moduleContextText
+    moduleContextText,
+    gameMode: gameMode.value
   })
 
   // 保存 AI 回复
@@ -390,50 +487,10 @@ async function sendMessage() {
   if (!text || !sessionStore.currentSessionId || chatStore.isStreaming || aiStreaming.value) return
   userInput.value = ''
 
-  // ===== 检定指令: .yes 或 .no =====
-  if (text === '.yes' || text === '.no') {
-    const char = selectedCharId.value
-      ? characterStore.characters.find(c => c.id === selectedCharId.value)
-      : characterStore.characters[0]
-
-    if (text === '.no') {
-      const result = performDeclinedCheck()
-      await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
-      const msg = formatCheckResult(result)
-      await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, characterId: selectedCharId.value, role: 'dice', content: msg, type: 'dice' })
-    } else if (text === '.yes' && char) {
-      const checkRequest = parseCheckRequest()
-      if (checkRequest) {
-        const result = performUnifiedCheck(char, checkRequest.checkType, checkRequest.difficulty)
-        await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
-        const msg = formatCheckResult(result)
-        await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, characterId: selectedCharId.value, role: 'dice', content: msg, type: 'dice' })
-      } else {
-        // 无明确检定请求时，做普通d20检定
-        const result = performUnifiedCheck(char, 'perception', 'medium')
-        await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
-        const msg = formatCheckResult(result)
-        await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, characterId: selectedCharId.value, role: 'dice', content: msg, type: 'dice' })
-      }
-    } else if (text === '.yes' && !char) {
-      await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, role: 'system', content: '⚠️ 请先在右侧选择一个角色再进行检定。', type: 'system' })
-    }
-    return
-  }
-
-  // 检测骰子指令: .d20, .2d6+3 等
+  // 检测骰子指令: .d20, .2d6+3 等（也可以通过右侧面板投骰）
   if (text.startsWith('.')) {
     const expr = text.slice(1)
-    const result = await roll(expr, sessionStore.currentSessionId, selectedCharId.value)
-    if (result) {
-      await chatStore.addMessage({
-        sessionId: sessionStore.currentSessionId,
-        characterId: selectedCharId.value,
-        role: 'dice',
-        content: result.detail,
-        type: 'dice'
-      })
-    }
+    await handleDiceRoll(expr)
     return
   }
 
@@ -461,7 +518,8 @@ async function sendMessage() {
     worldEntries,
     summary: null,
     userMessage: text,
-    moduleContextText
+    moduleContextText,
+    gameMode: gameMode.value
   })
 
   // 保存 AI 回复
@@ -480,6 +538,27 @@ async function sendMessage() {
 /** 快捷属性检定 */
 async function quickCheck(statName, statValue) {
   if (!sessionStore.currentSessionId) return
+  // 未到检定时机则忽略
+  if (!canRoll.value) return
+
+  // 如有待处理检定请求，使用统一检定
+  const checkReq = pendingCheck.value
+  if (checkReq && !checkResponded.value) {
+    const char = selectedCharId.value
+      ? characterStore.characters.find(c => c.id === selectedCharId.value)
+      : characterStore.characters[0]
+    if (char) {
+      const result = performUnifiedCheck(char, checkReq.checkType, checkReq.difficulty)
+      await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
+      const msg = formatCheckResult(result)
+      await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, characterId: selectedCharId.value, role: 'dice', content: msg, type: 'dice' })
+      checkResponded.value = true
+      await continueAfterCheck(msg)
+      return
+    }
+  }
+
+  // 普通快捷检定
   const result = await abilityCheck(statName, statValue, sessionStore.currentSessionId, selectedCharId.value)
   if (result) {
     await chatStore.addMessage({
@@ -516,7 +595,7 @@ function roleLabel(role) {
     <!-- 顶部工具栏 -->
     <div class="flex justify-between items-center">
       <span class="text-xs text-ink-muted">
-        今日事件: {{ dayCycle.eventsToday.value }}/{{ dayCycle.maxEventsPerDay }}
+        今日事件: {{ dayCycle?.eventsToday?.value ?? 0 }}/{{ dayCycle?.maxEventsPerDay ?? 4 }}
       </span>
       <div class="flex gap-2">
         <button class="btn-ghost text-xs" @click="showCombat = !showCombat">
@@ -570,14 +649,38 @@ function roleLabel(role) {
           </span>
           <!-- 事件进度 -->
           <span class="text-[9px] text-ink-muted/60">
-            事件 {{ dayCycle.eventsToday.value }}/{{ dayCycle.maxEventsPerDay }}
+            事件 {{ dayCycle?.eventsToday?.value ?? 0 }}/{{ dayCycle?.maxEventsPerDay ?? 4 }}
           </span>
         </div>
         <div class="flex gap-2 items-center">
-          <button class="btn-ghost text-xs" @click="exportChat(sessionStore.currentSessionId, sessionStore.currentSession?.name)">
-            导出
-          </button>
-          <button class="btn-ghost text-xs" @click="chatStore.clearChat(sessionStore.currentSessionId)">清空</button>
+          <!-- 游戏模式切换 -->
+          <div class="relative group">
+            <button
+              class="text-xs px-2.5 py-1 rounded-full transition-all"
+              :class="gameMode === 'guided'
+                ? 'bg-[#5A5550]/10 text-[#5A5550] border border-[#5A5550]/20'
+                : 'text-ink-muted/40 hover:text-ink-muted'"
+              @click="gameMode = 'guided'"
+            >引导模式</button>
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-[#3A3530] text-[#F5F0E8] text-[10px] rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 delay-1000 pointer-events-none z-[200]">
+              AI 提供选项按钮，引导剧情推进
+              <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-0.5 w-2 h-2 bg-[#3A3530] rotate-45"></div>
+            </div>
+          </div>
+          <span class="text-[10px] text-ink-muted/30">|</span>
+          <div class="relative group">
+            <button
+              class="text-xs px-2.5 py-1 rounded-full transition-all"
+              :class="gameMode === 'free'
+                ? 'bg-[#5A7A5A]/10 text-[#5A7A5A] border border-[#5A7A5A]/20'
+                : 'text-ink-muted/40 hover:text-ink-muted'"
+              @click="gameMode = 'free'"
+            >自由模式</button>
+            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-[#3A3530] text-[#F5F0E8] text-[10px] rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 delay-1000 pointer-events-none z-[200]">
+              自由探索，AI 描述场景中的可交互目标
+              <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-0.5 w-2 h-2 bg-[#3A3530] rotate-45"></div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -642,8 +745,8 @@ function roleLabel(role) {
           </button>
         </Transition>
 
-        <!-- 选项按钮 — 从AI回复中解析可点击选项 -->
-        <div class="flex justify-start">
+        <!-- 选项按钮 — 引导模式下从AI回复中解析可点击选项 -->
+        <div v-if="gameMode === 'guided'" class="flex justify-start">
           <div class="max-w-[75%]">
             <ChoiceButtons
               :text="lastAssistantMessage"
@@ -669,8 +772,9 @@ function roleLabel(role) {
           </select>
           <input
             v-model="userInput"
-            class="input-parchment flex-1 text-sm"
-            placeholder="输入消息... (.d20 投骰)"
+            class="input-parchment flex-1 text-sm transition-colors"
+            :class="pendingCheck && !checkResponded ? '!border-amber-400 !bg-amber-50' : ''"
+            :placeholder="pendingCheck && !checkResponded ? '⚡ 请进行检定 (输入 .yes 接受 / .no 放弃)' : '输入消息... (.d20 投骰)'"
             :disabled="aiStreaming || chatStore.isStreaming"
             @keyup.enter="sendMessage"
           />
@@ -693,11 +797,13 @@ function roleLabel(role) {
     </CardWrapper>
 
     <!-- ===== 右侧：骰子面板 ===== -->
-    <div class="w-[320px] flex-shrink-0 flex flex-col gap-4">
+    <div class="w-[320px] flex-shrink-0 flex flex-col gap-4" :class="pendingCheck && !checkResponded ? 'animate-pulse' : ''">
       <!-- d20 数值面板 -->
-      <CardWrapper class="p-4">
+      <CardWrapper class="p-4" :class="pendingCheck && !checkResponded ? 'ring-2 ring-amber-400/50 !border-amber-300' : ''">
         <div class="flex items-center justify-between mb-4">
-          <h4 class="text-sm text-ink-secondary tracking-wide">d20 投骰</h4>
+          <h4 class="text-sm font-medium tracking-wide" :class="pendingCheck && !checkResponded ? 'text-amber-600' : 'text-ink-secondary'">
+            {{ pendingCheck && !checkResponded ? '⚡ 检定中' : 'd20 投骰' }}
+          </h4>
           <div class="flex gap-1">
             <button
               class="text-[10px] px-2 py-0.5 rounded"
@@ -714,17 +820,20 @@ function roleLabel(role) {
 
         <!-- 快速 d20 -->
         <div v-if="diceTab === 'd20'" class="space-y-3">
-          <!-- 纯 d20（无手动加成，加成由代码自动计算） -->
           <button
-            class="w-full py-3 rounded-lg text-sm border border-[#D8D2C8] hover:bg-[#F5F0E8] transition-colors"
-            :disabled="isRolling"
-            @click="roll('d20', sessionStore.currentSessionId, selectedCharId)"
+            class="w-full py-3 rounded-lg text-sm border transition-colors"
+            :class="!canRoll
+              ? 'border-[#E8E2D8] bg-[#F5F0E8]/50 text-ink-muted/30 cursor-not-allowed'
+              : 'border-[#D8D2C8] hover:bg-[#F5F0E8]'"
+            :disabled="isRolling || !canRoll"
+            @click="handleDiceRoll('d20')"
           >
-            🎲 投掷 d20（纯骰面）
+            {{ !canRoll ? '🔒 骰子已锁定' : '🎲 投掷 d20 (自动加权)' }}
           </button>
           <p class="text-[9px] text-ink-muted/60 text-center">
-            AI要求检定时输入 <strong>.yes</strong> 进行统一检定（自动计算加成）<br>
-            或 <strong>.no</strong> 放弃检定（自动获低值）
+            {{ !canRoll
+              ? 'AI 未发起检定请求，骰子面板已锁定'
+              : '⚡ AI 请求检定 — 投掷骰子自动计算加权结果' }}
           </p>
           <!-- 骰子结果展示 -->
           <div v-if="lastResult" class="fade-in bg-[#F5F0E8] rounded-lg p-3 text-center">
@@ -735,10 +844,15 @@ function roleLabel(role) {
             <p class="text-xs text-ink-muted mt-1">{{ lastResult.detail }}</p>
             <p v-if="lastResult.label" class="text-xs text-ink-secondary mt-0.5">{{ lastResult.label }}</p>
           </div>
-          <div v-else class="bg-[#F5F0E8] rounded-lg p-6 text-center">
-            <DiceIcon :size="40" class="mx-auto opacity-20" />
-            <p class="text-xs text-ink-muted mt-2">AI 要求检定时使用 .yes / .no</p>
-            <p class="text-[10px] text-ink-muted/60 mt-1">加成由代码自动计算</p>
+          <div v-else class="rounded-lg p-6 text-center transition-colors"
+            :class="canRoll
+              ? 'bg-amber-50 border-2 border-amber-300 animate-pulse'
+              : 'bg-[#F5F0E8]'">
+            <DiceIcon :size="40" class="mx-auto" :class="canRoll ? 'opacity-80' : 'opacity-20'" />
+            <p class="text-xs font-medium mt-2" :class="canRoll ? 'text-amber-700' : 'text-ink-muted'">
+              {{ canRoll ? '⚡ AI 请求检定 — 投掷骰子自动计算加权结果' : '骰子已锁定，等待 AI 发起检定' }}
+            </p>
+            <p class="text-[10px] text-ink-muted/60 mt-1">检定结果自动加权计算并返回</p>
           </div>
         </div>
 
@@ -748,8 +862,12 @@ function roleLabel(role) {
             <button
               v-for="expr in ['d4', 'd6', 'd8', 'd10', 'd12', 'd20', 'd100', '2d6', '3d6', '4d6k3']"
               :key="expr"
-              class="text-xs px-3 py-1.5 rounded-lg border border-[#D8D2C8] hover:bg-[#F5F0E8] transition-colors"
-              @click="roll(expr, sessionStore.currentSessionId, selectedCharId)"
+              class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+              :class="!canRoll
+                ? 'border-[#E8E2D8] bg-[#F5F0E8]/30 text-ink-muted/30 cursor-not-allowed'
+                : 'border-[#D8D2C8] hover:bg-[#F5F0E8]'"
+              :disabled="!canRoll"
+              @click="handleDiceRoll(expr)"
             >
               {{ expr }}
             </button>

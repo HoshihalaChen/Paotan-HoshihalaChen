@@ -1,6 +1,7 @@
 import { ref } from 'vue'
 import { streamChat } from '../services/deepseek.js'
 import { buildSystemPrompt, buildMessages, getContextWindow } from '../services/memory.js'
+import { getRulebook } from '../../modules/index.js'
 
 /**
  * AI 流式聊天 composable
@@ -30,15 +31,21 @@ export function useStreaming() {
     worldEntries,
     summary,
     userMessage,
-    moduleContextText
+    moduleContextText,
+    gameMode
   }) {
-    // 构建增强的系统提示词（含模组隔离边界）
-    const systemPrompt = buildSystemPrompt({
+    // 加载规则书（根据模组系统动态匹配）
+    const rules = await getRulebook(session?.system)
+
+    // 构建增强的系统提示词（含模组隔离边界 + 规则书 + 游戏模式）
+    const systemPrompt = await buildSystemPrompt({
       session,
       characters,
       worldEntries,
       summary,
-      moduleContextText
+      moduleContextText,
+      rules,
+      gameMode
     })
 
     // 获取上下文窗口

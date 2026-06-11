@@ -99,3 +99,106 @@ export function getModuleLocations(module) {
 export function getModuleSpecialSurnames(module) {
   return module?.charCreation?.specialSurnames || {}
 }
+
+/** 规则文件注册表 — 系统名 → 规则文件路径 */
+const RULE_FILES = {
+  'D&D 5E': () => import('./rules/dnd5e.json'),
+  'COC 7th': () => import('./rules/coc7.json'),
+  '自定义 · 诡秘体系': () => import('./rules/lotm.json')
+}
+
+/** 规则内容缓存 */
+const _ruleCache = {}
+
+/**
+ * 根据系统名获取规则书。未匹配时返回 null（AI自由裁量）
+ * 支持用户导入模组：只要 system 字段匹配注册表中的键即可自动加载
+ */
+export async function getRulebook(system) {
+  if (!system) return null
+  if (_ruleCache[system]) return _ruleCache[system]
+
+  const loader = RULE_FILES[system]
+  if (!loader) {
+    console.warn(`[Rulebook] 未找到系统"${system}"的规则文件，AI将自由裁量`)
+    return null
+  }
+  try {
+    const mod = await loader()
+    _ruleCache[system] = mod.default || mod
+    return _ruleCache[system]
+  } catch (e) {
+    console.warn(`[Rulebook] 加载规则文件失败: ${system}`, e.message)
+    return null
+  }
+}
+
+/**
+ * 将规则书格式化为 AI system prompt 片段
+ * 仅提取关键判定规则，保持简洁避免token浪费
+ */
+export function formatRulebookForPrompt(rules) {
+  if (!rules) return ''
+
+  let text = `\n# 游戏规则参考（${rules.name}）\n`
+  if (rules.source) text += `规则来源：${rules.source}\n`
+
+  // 属性说明
+  if (rules.attributes) {
+    text += `\n## 属性体系\n`
+    for (const [key, attr] of Object.entries(rules.attributes)) {
+      text += `- ${attr.name}(${key})：${attr.desc}`
+      if (attr.modifier) text += ` 调整值=${attr.modifier}`
+      text += `\n`
+    }
+  }
+  // 衍生属性
+  if (rules.derived) {
+    text += `\n## 衍生属性\n`
+    for (const [key, val] of Object.entries(rules.derived)) {
+      text += `- ${val.name}：${val.formula} (${val.desc})\n`
+    }
+  }
+
+  // 核心检定规则
+  if (rules.skillCheckRules?.length) {
+    text += `\n## 技能检定规则\n`
+    for (const r of rules.skillCheckRules) text += `- ${r}\n`
+  }
+
+  // 难度对照
+  if (rules.difficulty) {
+    text += `\n## 难度等级(DC)\n`
+    for (const [name, val] of Object.entries(rules.difficulty)) {
+      text += `- ${name}：DC ${val}\n`
+    }
+  }
+
+  // 战斗规则
+  if (rules.combatRules?.length) {
+    text += `\n## 战斗规则\n`
+    for (const r of rules.combatRules) text += `- ${r}\n`
+  }
+
+  // 特殊机制（诡秘体系等）
+  if (rules.pathwayMechanics) {
+    text += `\n## 序列晋升机制\n`
+    for (const [k, v] of Object.entries(rules.pathwayMechanics)) {
+      text += `- ${v}\n`
+    }
+  }
+  if (rules.sanityRules?.length) {
+    text += `\n## 理智/疯狂规则\n`
+    for (const r of rules.sanityRules) text += `- ${r}\n`
+  }
+  if (rules.pushRules?.length) {
+    text += `\n## 孤注一掷规则\n`
+    for (const r of rules.pushRules) text += `- ${r}\n`
+  }
+
+  // 特殊判例
+  if (rules.fallDamage) text += `\n坠落伤害：${rules.fallDamage}\n`
+  if (rules.restRules) text += `休息规则：${rules.restRules}\n`
+
+  return text
+}
