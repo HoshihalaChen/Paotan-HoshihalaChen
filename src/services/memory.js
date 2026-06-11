@@ -166,6 +166,7 @@ export function buildSystemPrompt(options) {
       prompt += ` | HP:${char.hp || '?'}/${char.maxHp || '?'}`
       prompt += `\n  装备：${(char.equipment || []).join('、') || '基础装备'}`
       if (char.skills?.length) prompt += `\n  技能：${char.skills.join('、')}`
+      if (char.surnameMeaning) prompt += `\n  🔶 特殊姓氏背景：${char.surnameMeaning}`
       prompt += `\n`
     }
   }

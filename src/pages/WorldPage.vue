@@ -1,9 +1,10 @@
 <script setup>
-// 世界观情报页 — 全分类拆分展示 + 力量/势力体系重点
+// 图鉴页 — 直接从模组 JSON 加载数据，不依赖 IndexedDB 导入
 import { ref, computed, onMounted, watch } from 'vue'
 import { useSessionStore } from '../stores/session.js'
 import { useWorldStore } from '../stores/world.js'
 import { useModuleContextStore } from '../stores/moduleContext.js'
+import { getModuleSpecialSurnames } from '../../modules/index.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
 
 const sessionStore = useSessionStore()
@@ -19,6 +20,79 @@ const currentModuleBg = computed(() =>
 const currentModuleSetting = computed(() =>
   moduleCtxStore.activeModule?.setting || '')
 
+// ========== 核心数据源：直接从模组 JSON 构建图鉴条目 ==========
+const moduleEntries = computed(() => {
+  const entries = []
+  const mod = moduleCtxStore.activeModule
+  if (!mod) return entries
+
+  // 1. 模组 worldLore 条目
+  for (const e of (mod.worldLore || [])) {
+    entries.push({
+      id: 'mod-' + e.title,
+      category: e.category || '未分类',
+      title: e.title || '',
+      content: e.content || '',
+      tags: e.tags || [],
+      icon: e.icon || '◆',
+      order: e.order || 0,
+      source: 'module'
+    })
+  }
+
+  // 2. 特殊姓氏条目
+  const specialSurnames = getModuleSpecialSurnames(mod)
+  for (const [surname, meaning] of Object.entries(specialSurnames)) {
+    entries.push({
+      id: 'mod-surname-' + surname,
+      category: '家族姓氏',
+      title: `「${surname}」家族`,
+      content: meaning,
+      tags: ['特殊姓氏', '贵族', '家族'],
+      icon: '🛡️',
+      order: 0,
+      source: 'module'
+    })
+  }
+
+  return entries
+})
+
+// 用户手动添加的条目（从 DB 加载，排除与模组重复的标题）
+const userEntries = computed(() => {
+  const modTitles = new Set(moduleEntries.value.map(e => e.title))
+  return worldStore.entries.filter(e => !modTitles.has(e.title))
+})
+
+// 合并后的所有条目
+const allEntries = computed(() => {
+  return [...moduleEntries.value, ...userEntries.value]
+})
+
+// 按分类分组
+const entriesByCategory = computed(() => {
+  const map = {}
+  for (const entry of allEntries.value) {
+    if (!map[entry.category]) map[entry.category] = []
+    map[entry.category].push(entry)
+  }
+  return map
+})
+
+// 排序后的分类列表
+const sortedCategories = computed(() => {
+  const cats = Object.keys(entriesByCategory.value)
+  const priority = ['魔法体系', '组织势力', '宗教', '宇宙', '规则']
+  const ordered = []
+  for (const p of priority) {
+    if (cats.includes(p)) ordered.push(p)
+  }
+  for (const c of cats) {
+    if (!ordered.includes(c)) ordered.push(c)
+  }
+  return ordered
+})
+
 // 表单
 const showForm = ref(false)
 const formData = ref({ id: null, title: '', category: '', content: '', tags: [], icon: '◆' })
@@ -30,7 +104,6 @@ function toggleCategory(cat) {
   collapsedCategories.value[cat] = !collapsedCategories.value[cat]
 }
 function isCollapsed(cat) {
-  // 力量体系和势力体系默认展开
   if (collapsedCategories.value[cat] === undefined) {
     const priorityCats = ['魔法体系', '组织势力', '宗教', '规则', '宇宙']
     return !priorityCats.includes(cat)
@@ -49,64 +122,27 @@ const catMeta = {
   '规则':     { icon: '⚖️', color: '#6A8B8B', desc: '世界运行的基本法则与判定规则' },
   '宇宙':     { icon: '🌌', color: '#5A6A8B', desc: '宇宙观、维度与星界知识' },
   '人物传记': { icon: '📖', color: '#8B6A6A', desc: '重要人物与传奇英雄' },
+  '家族姓氏': { icon: '🛡️', color: '#8B6A5A', desc: '拥有特殊背景或贵族血统的家族谱系' },
 }
-
-// 按分类分组的条目
-const entriesByCategory = computed(() => {
-  const map = {}
-  for (const entry of worldStore.entries) {
-    if (!map[entry.category]) map[entry.category] = []
-    map[entry.category].push(entry)
-  }
-  return map
-})
-
-// 排序后的分类列表 — 力量/势力优先
-const sortedCategories = computed(() => {
-  const cats = Object.keys(entriesByCategory.value)
-  const priority = ['魔法体系', '组织势力', '宗教', '宇宙', '规则']
-  const ordered = []
-  for (const p of priority) {
-    if (cats.includes(p)) ordered.push(p)
-  }
-  for (const c of cats) {
-    if (!ordered.includes(c)) ordered.push(c)
-  }
-  return ordered
-})
 
 // 左侧快捷导航
 const navCategory = ref(null)
 function scrollToCategory(cat) {
   navCategory.value = cat
-  // 展开对应分类
   if (collapsedCategories.value[cat]) {
     collapsedCategories.value[cat] = false
   }
-  // 滚动到对应元素
   const el = document.getElementById('cat-' + cat)
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
+// 刷新时重新加载 DB（仅用于用户手动添加的条目）
 const loading = ref(false)
-
 async function loadData() {
   loading.value = true
   try {
     if (sessionStore.currentSessionId) {
       await worldStore.loadWorldData(sessionStore.currentSessionId)
-      console.log('[WorldPage] DB加载完成, 条目数:', worldStore.entries.length)
-
-      // 兜底：如果 DB 为空但 moduleContext 中有 worldLore，直接使用
-      if (worldStore.entries.length === 0 && moduleCtxStore.activeModule?.worldLore?.length) {
-        console.log('[WorldPage] DB为空，从moduleContext读取worldLore兜底')
-        const fallbackEntries = moduleCtxStore.activeModule.worldLore.map((e, i) => ({
-          ...e,
-          id: 'fallback-' + i,
-          icon: e.icon || '◆'
-        }))
-        worldStore.$patch({ entries: fallbackEntries })
-      }
     }
   } finally {
     loading.value = false
@@ -114,7 +150,6 @@ async function loadData() {
 }
 onMounted(loadData)
 watch(() => sessionStore.currentSessionId, loadData)
-watch(() => moduleCtxStore.moduleId, () => { loadData() })
 
 function openCreate(cat) {
   formData.value = { id: null, title: '', category: cat || '未分类', content: '', tags: [], icon: '◆' }
@@ -146,11 +181,11 @@ function addTag() {
     <div class="flex justify-between items-center">
       <div>
         <h2 class="text-xl text-ink-primary tracking-wider">
-          世界观情报 — 《{{ currentModuleName }}》
+          图鉴 — 《{{ currentModuleName }}》
         </h2>
         <p class="text-xs text-ink-muted tracking-wide mt-0.5">
           {{ currentModuleSystem }}
-          <span class="ml-2">· {{ worldStore.entries.length }} 条设定 · {{ sortedCategories.length }} 个分类</span>
+          <span class="ml-2">· {{ allEntries.length }} 条设定 · {{ sortedCategories.length }} 个分类</span>
         </p>
       </div>
       <div class="flex gap-2">
@@ -172,8 +207,13 @@ function addTag() {
       </div>
     </CardWrapper>
 
+    <!-- ===== 未选模组提示 ===== -->
+    <CardWrapper v-if="!moduleCtxStore.activeModule" class="p-12 text-center">
+      <p class="text-sm text-ink-muted">请先在主页选择模组并开始游戏，启动后图鉴将自动展示该模组的完整设定。</p>
+    </CardWrapper>
+
     <!-- ===== 主布局：快捷导航 + 分类区域 ===== -->
-    <div class="flex gap-6">
+    <div v-if="moduleCtxStore.activeModule" class="flex gap-6">
       <!-- 左侧快捷导航 -->
       <CardWrapper class="w-40 flex-shrink-0 p-3 self-start sticky" style="top: 24px;">
         <h4 class="text-xs text-ink-muted tracking-wide mb-2">快捷导航</h4>
@@ -194,10 +234,8 @@ function addTag() {
       <!-- 右侧分类详细内容 -->
       <div class="flex-1 space-y-6">
         <!-- 空状态 -->
-        <CardWrapper v-if="worldStore.entries.length === 0" class="p-12 text-center">
-          <p class="text-sm text-ink-muted">
-            {{ moduleCtxStore.activeModule ? '该模组的世界观设定将在游戏初始化时自动导入' : '启动模组游戏后世界观自动生成，也可手动添加' }}
-          </p>
+        <CardWrapper v-if="allEntries.length === 0" class="p-12 text-center">
+          <p class="text-sm text-ink-muted">该模组暂无图鉴设定。</p>
         </CardWrapper>
 
         <!-- 每个分类一个区块 -->
@@ -234,7 +272,6 @@ function addTag() {
 
           <!-- 分类条目列表（可折叠） -->
           <div v-if="!isCollapsed(cat)" class="space-y-3 pl-7">
-            <!-- 力量体系 / 势力体系：使用突出展示 -->
             <div
               v-for="entry in entriesByCategory[cat]"
               :key="entry.id"

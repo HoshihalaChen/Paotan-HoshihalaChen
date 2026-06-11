@@ -92,3 +92,8 @@ export function getModuleItems(module) {
 export function getModuleLocations(module) {
   return module.locations || []
 }
+
+/** 获取模组的特殊姓氏映射表 */
+export function getModuleSpecialSurnames(module) {
+  return module?.charCreation?.specialSurnames || {}
+}

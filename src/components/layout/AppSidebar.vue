@@ -19,7 +19,7 @@ const navItems = [
   { key: 'game', label: '游戏', icon: '◆' },
   { key: 'character', label: '角色', icon: '◇' },
   { key: 'map', label: '地图', icon: '◇' },
-  { key: 'world', label: '世界观', icon: '◇' },
+  { key: 'world', label: '图鉴', icon: '◇' },
   { key: 'log', label: '日志', icon: '◇' },
   { key: 'archive', label: '存档', icon: '◇' },
   { key: 'settings', label: '设置', icon: '◇' },

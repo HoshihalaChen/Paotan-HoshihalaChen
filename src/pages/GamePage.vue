@@ -12,6 +12,7 @@ import { useStreaming } from '../composables/useStreaming.js'
 import { useExport } from '../composables/useExport.js'
 import { performUnifiedCheck, performDeclinedCheck, formatCheckResult, logCheckResult, DIFFICULTY } from '../services/check.js'
 import { createArchive } from '../services/archive.js'
+import { streamChat } from '../services/deepseek.js'
 import { useDayCycleStore } from '../stores/dayCycle.js'
 import { useBackup } from '../composables/useBackup.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
@@ -66,6 +67,8 @@ const diceTab = ref('d20') // 'd20' | 'custom' | 'history'
 
 // 标记游戏是否已在该会话中初始化过日期
 const dateInitialized = ref(false)
+// 标记开场白是否已生成
+const openingNarrationDone = ref(false)
 
 onMounted(async () => {
   if (sessionStore.currentSessionId) {
@@ -85,8 +88,111 @@ onMounted(async () => {
       })
     }
     dateInitialized.value = true
+
+    // 如果没有已生成的 assistant 消息，自动生成角色个性化开场白
+    if (sessionStore.isGameActive) {
+      await generateOpeningNarrationIfNeeded()
+    }
   }
 })
+
+/** 检测是否需要生成开场白，如果是则根据角色自动生成 */
+async function generateOpeningNarrationIfNeeded() {
+  const sessionId = sessionStore.currentSessionId
+  if (!sessionId || openingNarrationDone.value) return
+
+  // 检查是否已有 assistant 类型为 chat 的消息（说明开场白已生成）
+  const hasNarration = chatStore.messages.some(
+    m => m.role === 'assistant' && m.type === 'chat'
+  )
+  if (hasNarration) {
+    openingNarrationDone.value = true
+    return
+  }
+
+  // 获取角色列表
+  const characters = characterStore.characters
+  if (characters.length === 0) return
+
+  // 构建角色描述
+  const charDescriptions = characters.map(c => {
+    let desc = `- ${c.name}：${c.race} ${c.class}`
+    if (c.level) desc += ` Lv.${c.level}`
+    if (c.pathway) desc += ` (${c.pathway})`
+    if (c.surnameMeaning) desc += `\n  🔶 特殊姓氏背景：${c.surnameMeaning}`
+    return desc
+  }).join('\n')
+
+  // 获取模组信息
+  const mod = moduleCtxStore.activeModule || {}
+  const modName = mod.name || sessionStore.currentSession?.name || '未知冒险'
+  const modSystem = mod.system || sessionStore.currentSession?.system || ''
+  const modBackground = mod.background || ''
+
+  const hasSpecialSurnames = characters.some(c => c.surnameMeaning)
+
+  const openingPrompt = `你是一位经验丰富的 TRPG 游戏主持人 (DM/GM)。
+你的 DM 风格：沉浸式叙述、主动引导玩家、营造戏剧张力、适时引入挑战。
+
+你正在主持一场《${modName}》的跑团冒险。
+
+# 冒险背景
+${modBackground}
+
+# 当前队伍冒险者
+${charDescriptions}
+${hasSpecialSurnames ? `
+⚠️ 重要：上述冒险者中有角色拥有特殊的家族/姓氏背景。请在开场叙述中巧妙地融入这些背景元素——这可能是故事的重要线索，影响整个冒险的走向。` : ''}
+
+# 你的任务
+为以上冒险者写一段精彩的冒险开场叙述。要求：
+1. 以第二人称「你」直接称呼玩家，营造代入感
+2. 用生动的感官细节描绘当前场景——玩家看到什么、听到什么、闻到什么
+3. 迅速建立故事冲突或悬念——不要平铺直叙
+4. 如果有冒险者拥有特殊家族背景，务必巧妙地将其融入故事起点
+5. **最重要**：结尾必须另起一行，以数字编号给出 2-3 个具体的行动选项，格式如下：
+1. [选项描述]
+2. [选项描述]
+3. [选项描述]
+
+语气要有画面感和戏剧张力。使用中文。控制在400-600字。`
+
+  const messages = [
+    { role: 'system', content: openingPrompt },
+    { role: 'user', content: `请开始《${modName}》的冒险开场，为冒险者${characters.map(c => c.name).join('、')}开启旅程。` }
+  ]
+
+  // 开始流式生成
+  chatStore.startStreaming()
+  let abortController = new AbortController()
+
+  try {
+    await streamChat(messages, {
+      onToken: (token) => {
+        chatStore.appendStreamToken(token)
+      },
+      onDone: async () => {
+        await chatStore.finishStreaming(sessionId, null)
+        openingNarrationDone.value = true
+        scrollToBottom()
+      },
+      onError: async (err) => {
+        console.error('Opening narration failed, using fallback:', err.message)
+        // 回退：简短本地开场
+        const fallback = `欢迎来到《${modName}》的世界！\n\n你环顾四周，空气中弥漫着冒险的气息。远处有什么在召唤着你——也许是命运，也许是危险，也许是宝藏。\n\n你的故事即将开始。你打算怎么做？\n1. 观察周围的环境\n2. 寻找附近的城镇或村庄\n3. 检查你的装备和物资`
+        chatStore.streamingContent.value = fallback
+        await chatStore.finishStreaming(sessionId, null)
+        openingNarrationDone.value = true
+        scrollToBottom()
+      },
+      signal: abortController.signal
+    })
+  } catch (e) {
+    console.error('generateOpeningNarration error:', e)
+    chatStore.finishStreaming(sessionId, null)
+    openingNarrationDone.value = true
+  }
+}
 
 // 监听消息变化，自动滚动
 watch(() => chatStore.messages.length, async () => {

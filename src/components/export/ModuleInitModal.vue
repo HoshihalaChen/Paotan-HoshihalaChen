@@ -1,13 +1,11 @@
 <script setup>
 // 模组初始化弹窗 - 完整的模组启动流程
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useSessionStore } from '../../stores/session.js'
 import { useCharacterStore } from '../../stores/character.js'
 import { useChatStore } from '../../stores/chat.js'
 import { useWorldStore } from '../../stores/world.js'
 import { useUIStore } from '../../stores/ui.js'
-import { streamChat, getApiKey } from '../../services/deepseek.js'
-import { buildSystemPrompt } from '../../services/memory.js'
 import { useModuleContextStore } from '../../stores/moduleContext.js'
 import { useDayCycleStore } from '../../stores/dayCycle.js'
 import { useCustomAttrsStore } from '../../stores/customAttrs.js'
@@ -37,20 +35,16 @@ const chatStore = useChatStore()
 const worldStore = useWorldStore()
 const ui = useUIStore()
 
-// 流程阶段: 'init' | 'ai_generating' | 'ai_done' | 'character_select' | 'ready'
+// 流程阶段: 'init' | 'character_select'
 const phase = ref('init')
 const phaseMessages = {
   init: '准备初始化...',
-  ai_generating: 'AI 正在生成冒险开场...',
-  ai_done: '开场叙述已生成',
-  character_select: '选择冒险角色',
-  ready: '一切就绪，可以开始冒险！'
+  character_select: '选择冒险角色'
 }
 
-// AI 生成的初始化内容
-const aiNarration = ref('')
+// 初始化状态
 const aiErrorMsg = ref('')
-const initProgress = ref('正在连接 DeepSeek API...')
+const initProgress = ref('正在准备冒险会话...')
 
 // 角色选择状态
 const selectedCharIds = ref(new Set())
@@ -106,7 +100,13 @@ function randomizeCharacter() {
 
   const firsts = cc.namePool?.first || ['冒险者']
   const lasts = cc.namePool?.last || ['']
-  const name = firsts[Math.floor(Math.random() * firsts.length)] + '·' + lasts[Math.floor(Math.random() * lasts.length)]
+  const pickedFirst = firsts[Math.floor(Math.random() * firsts.length)]
+  const pickedLast = lasts[Math.floor(Math.random() * lasts.length)]
+  const name = pickedFirst + '·' + pickedLast
+
+  // 检查是否为特殊姓氏
+  const specialSurnames = cc.specialSurnames || {}
+  const surnameMeaning = specialSurnames[pickedLast] || null
 
   const base = cc.attrBase || 3
   const clsMod = cc.classMods?.[pickedClass] || {}
@@ -115,6 +115,7 @@ function randomizeCharacter() {
   const level = cc.fixedLevel ?? cc.defaultLevel ?? 1
 
   const form = { name, class: pickedClass, race: pickedRace, level: level, hp: 10, maxHp: 10 }
+  if (surnameMeaning) form.surnameMeaning = surnameMeaning
   for (const attr of attrs) {
     form[attr.key] = Math.max(0, base + (clsMod[attr.key] || 0) + (raceMod[attr.key] || 0))
   }
@@ -133,7 +134,7 @@ onMounted(() => {
   })
 })
 
-/** 完整初始化流程 */
+/** 完整初始化流程（开场白延后到进入游戏页面后根据角色生成） */
 async function startInitialization() {
   phase.value = 'init'
 
@@ -152,20 +153,36 @@ async function startInitialization() {
 
   // Step 2: 导入世界观条目
   const loreEntries = modApi.getModuleWorldLore(props.module)
-  console.log('[ModuleInit] 导入世界观条目:', loreEntries.length, '条, sessionId:', sessionId)
   if (loreEntries.length > 0) {
     initProgress.value = '正在导入世界观设定...'
     for (const entry of loreEntries) {
       try {
         await worldStore.addEntry(sessionId, entry)
-        console.log('[ModuleInit] 已导入:', entry.title, '→', entry.category)
       } catch (e) {
         console.error('[ModuleInit] 导入条目失败:', entry.title, e)
       }
     }
-    // 导入完成后强制刷新 worldStore
     await worldStore.loadWorldData(sessionId)
-    console.log('[ModuleInit] 世界观导入完成, 当前条目数:', worldStore.entries.length)
+  }
+
+  // Step 2.5: 导入特殊姓氏为世界观条目
+  const specialSurnames = modApi.getModuleSpecialSurnames(props.module)
+  if (Object.keys(specialSurnames).length > 0) {
+    initProgress.value = '正在记录世家谱系...'
+    for (const [surname, meaning] of Object.entries(specialSurnames)) {
+      try {
+        await worldStore.addEntry(sessionId, {
+          category: '家族姓氏',
+          title: `「${surname}」家族`,
+          content: meaning,
+          tags: ['特殊姓氏', '贵族', '家族'],
+          icon: '🛡️'
+        })
+      } catch (e) {
+        console.error('[ModuleInit] 导入特殊姓氏失败:', surname, e)
+      }
+    }
+    await worldStore.loadWorldData(sessionId)
   }
 
   // Step 3: 添加系统消息
@@ -177,17 +194,7 @@ async function startInitialization() {
     type: 'system'
   })
 
-  // Step 4: 后台静默生成开场叙述（不展示给用户）
-  initProgress.value = '正在准备冒险...'
-
-  const hasApiKey = !!getApiKey()
-  if (!hasApiKey) {
-    await simulateLocalNarration()
-  } else {
-    await generateAINarration(sessionId)
-  }
-
-  // Step 5: 进入角色选择阶段
+  // Step 4: 直接进入角色选择（开场白延后到 GamePage 根据选中角色生成）
   phase.value = 'character_select'
 
   // 自动加载已有角色
@@ -200,104 +207,6 @@ async function startInitialization() {
     }
     await characterStore.loadCharacters(sessionId)
   }
-}
-
-/** 本地模拟开场叙述（无 API Key 时使用，现因已内置API Key通常不会被调用） */
-async function simulateLocalNarration() {
-  const mod = props.module
-  const lines = [
-    `《${mod.name}》`,
-    `${mod.system} · ${mod.levelRange}`,
-    '',
-    `${mod.background}`,
-    '',
-    `冒险的舞台：${mod.setting}。`,
-    '',
-    `你环顾四周，空气中弥漫着冒险的气息。`,
-    `远处有什么在召唤着你——`,
-    `也许是命运，也许是危险，也许是宝藏。`,
-    '',
-    '---',
-    '',
-    '现在，选择你的冒险者角色。然后点击「开始冒险」，',
-    'AI 将作为你的 DM，引领你进入这个等待探索的世界。',
-    '',
-    '你的故事即将开始。准备好了吗？'
-  ]
-
-  for (const line of lines) {
-    aiNarration.value += line + '\n'
-    await new Promise(r => setTimeout(r, 25))
-    await nextTick()
-  }
-
-  // 不存入聊天记录，等进入游戏时再由 startAdventure 添加
-}
-
-/** 调用 DeepSeek API 生成 AI 开场叙述 */
-async function generateAINarration(sessionId) {
-  aiErrorMsg.value = ''
-  const mod = props.module
-
-  // 构建 NPC 列表文本
-  const npcText = (mod.npcs || []).slice(0, 6).map(n =>
-    `- ${n.name}：${n.race} ${n.class}，${n.role}。${n.traits}。${n.notes || ''}`
-  ).join('\n')
-
-  const systemPrompt = `你是一位经验丰富的 TRPG 游戏主持人 (DM/GM)。
-你的 DM 风格：沉浸式叙述、主动引导玩家、营造戏剧张力、适时引入挑战。
-
-你正在主持一场《${mod.name}》的跑团冒险。
-
-# 模组信息
-- 系统：${mod.system}
-- 等级范围：${mod.levelRange}
-- 背景：${mod.background}
-- 场景：${mod.setting}
-- 主题：${(mod.themes || []).join('、')}
-- 预估时长：${mod.estimatedSessions || '多场会话'}
-
-# 主要NPC
-${npcText || '无预设NPC'}
-
-# 重要地点
-${(mod.locations || []).slice(0, 4).map(l => `- ${l.name}：${l.description}`).join('\n')}
-
-# 你的任务
-为玩家们写一段精彩的冒险开场叙述。要求：
-1. 以第二人称「你」直接称呼玩家，营造代入感
-2. 用生动的感官细节描绘当前场景——玩家看到什么、听到什么、闻到什么
-3. 迅速建立故事冲突或悬念——不要平铺直叙
-4. 引入至少一个NPC或事件来驱动故事
-5. **最重要**：结尾必须另起一行，以数字编号给出 2-3 个具体的行动选项，格式如下：
-1. [选项描述]
-2. [选项描述]
-3. [选项描述]
-确保每个选项是玩家在当前场景下可以执行的明确行动，而不是泛泛的提问。
-
-语气要有画面感和戏剧张力。使用中文。控制在400-600字。`
-
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: `请开始《${mod.name}》的冒险开场。用第二人称直接引导玩家进入故事。` }
-  ]
-
-  let abortController = new AbortController()
-
-  await streamChat(messages, {
-    onToken: (token) => {
-      aiNarration.value += token
-    },
-    onDone: async () => {
-      phase.value = 'ai_done'
-      // 不存入聊天记录，等进入游戏时再由 startAdventure 添加
-    },
-    onError: async (err) => {
-      aiErrorMsg.value = `AI 生成失败: ${err.message}，使用默认开场`
-      await simulateLocalNarration()
-    },
-    signal: abortController.signal
-  })
 }
 
 /** 切换角色选中 */
@@ -325,6 +234,15 @@ async function createNewCharacter() {
   }
   if (cc.fixedLevel != null) {
     newCharForm.value.level = cc.fixedLevel
+  }
+  // 检查手动输入的名字是否包含特殊姓氏
+  const nameParts = newCharForm.value.name.split('·')
+  if (nameParts.length >= 2) {
+    const lastName = nameParts[nameParts.length - 1]
+    const specialSurnames = cc.specialSurnames || {}
+    if (specialSurnames[lastName]) {
+      newCharForm.value.surnameMeaning = specialSurnames[lastName]
+    }
   }
   await characterStore.createCharacter(sessionStore.currentSessionId, newCharForm.value)
   await characterStore.loadCharacters(sessionStore.currentSessionId)
@@ -414,17 +332,7 @@ async function startAdventure() {
     type: 'system'
   })
 
-  // Step 2: 输出预生成的开场叙述（作为 DM 消息）
-  if (aiNarration.value) {
-    await chatStore.addMessage({
-      sessionId,
-      role: 'assistant',
-      content: aiNarration.value,
-      type: 'chat'
-    })
-  }
-
-  // 绑定模组上下文 — 激活模块隔离
+  // 绑定模组上下文 — 激活模块隔离（开场白延后到 GamePage 根据角色生成）
   const moduleCtxStore = useModuleContextStore()
   moduleCtxStore.bindModule(props.module)
 
@@ -450,17 +358,6 @@ async function startAdventure() {
     console.error('startAdventure error:', e)
     aiErrorMsg.value = '启动冒险失败: ' + (e.message || e)
   }
-}
-
-/** 跳过着色创建，直接开始 */
-function skipCharacterSelect() {
-  // 如果没有选中任何角色，默认全选
-  if (selectedCharIds.value.size === 0) {
-    const s = new Set()
-    characterStore.characters.forEach(c => s.add(c.id))
-    selectedCharIds.value = s
-  }
-  startAdventure()
 }
 
 // 属性选项
@@ -523,7 +420,7 @@ function charColor(name) {
           </div>
 
           <!-- 角色选择 -->
-          <div v-if="phase === 'character_select' || phase === 'ai_done' || phase === 'ready'">
+          <div v-if="phase === 'character_select'">
             <h3 class="text-sm text-ink-secondary tracking-wide">
               选择冒险者角色
               <span class="text-xs text-ink-muted ml-2">
@@ -699,21 +596,14 @@ function charColor(name) {
           </div>
           <div class="flex gap-3">
             <button class="btn-ghost text-sm" @click="emit('close')">
-              {{ phase === 'character_select' || phase === 'ready' ? '返回' : '取消' }}
+              {{ phase === 'character_select' ? '返回' : '取消' }}
             </button>
             <button
-              v-if="phase === 'character_select' || phase === 'ai_done' || phase === 'ready'"
+              v-if="phase === 'character_select'"
               class="btn-primary text-sm tracking-wider"
               @click="startAdventure"
             >
               开始冒险！
-            </button>
-            <button
-              v-if="phase === 'character_select' && characterStore.characters.length === 0"
-              class="btn-ghost text-xs"
-              @click="skipCharacterSelect"
-            >
-              跳过，直接开始
             </button>
           </div>
         </div>
