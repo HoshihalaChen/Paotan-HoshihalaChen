@@ -21,7 +21,9 @@ import ProgressBar from '../components/common/ProgressBar.vue'
 import CombatStats from '../components/visualization/CombatStats.vue'
 import ExportDialog from '../components/export/ExportDialog.vue'
 import SaveSlotDialog from '../components/export/SaveSlotDialog.vue'
+import InventoryBar from '../components/game/InventoryBar.vue'
 import ChoiceButtons from '../components/chat/ChoiceButtons.vue'
+import { syncItemsFromMessage } from '../services/inventory.js'
 import { formatTime } from '../utils/format.js'
 import { statLabels } from '../utils/format.js'
 
@@ -60,7 +62,8 @@ const showStats = ref(false)
 const dataTab = ref('角色')
 const showExport = ref(false)
 const showSaveDialog = ref(false)
-const combatState = ref(null)  // 当前战斗状态
+const combatState = ref(null)
+const inventoryRef = ref(null)
 
 // 游戏模式：引导模式(默认) / 自由模式
 const gameMode = ref('guided')  // 'guided' | 'free'
@@ -288,6 +291,18 @@ async function recordGameEvent() {
       autoSaveNotice.value = `📥 自动存档完成 — 第${dayCycle.dayCount}天`
       setTimeout(() => { autoSaveNotice.value = '' }, 3000)
     } catch (e) { console.error('[AutoSave] 失败:', e) }
+  }
+
+  // 同步AI回复中的物品变动到背包（仅玩家角色）
+  const lastMsg = chatStore.messages[chatStore.messages.length - 1]
+  if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content) {
+    const sid2 = sessionStore.currentSessionId
+    const cid = selectedCharId.value || characterStore.currentCharacterId
+    if (sid2 && cid) {
+      const playerNames = characterStore.characters.map(c => c.name)
+      await syncItemsFromMessage(sid2, cid, lastMsg.content, playerNames)
+      if (inventoryRef.value) inventoryRef.value.refresh()
+    }
   }
 
   // 尝试自动备份
@@ -793,6 +808,13 @@ function roleLabel(role) {
           </button>
         </div>
       </div>
+      <!-- 背包栏（输入框下方） -->
+      <InventoryBar
+        v-if="selectedCharId || characterStore.currentCharacterId"
+        ref="inventoryRef"
+        :session-id="sessionStore.currentSessionId"
+        :character-id="selectedCharId || characterStore.currentCharacterId"
+      />
     </CardWrapper>
 
     <!-- ===== 右侧：骰子面板 ===== -->
