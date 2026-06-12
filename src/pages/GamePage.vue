@@ -54,8 +54,7 @@ const chatContainer = ref(null)
 const showDiceHistory = ref(false)
 const showScrollBtn = ref(false)
 
-// 当前选中的快捷检定角色
-const selectedCharId = ref(null)
+// 快捷检定使用主控角色（始终跟随 characterStore.currentCharacterId）
 
 // 可视化面板
 const showStats = ref(false)
@@ -301,7 +300,7 @@ async function recordGameEvent() {
 
     // 自动存档
     try {
-      await createArchive(sessionStore.currentSessionId, selectedCharId.value || characterStore.currentCharacterId, {
+      await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
         moduleName: moduleCtxStore.moduleName,
         characterName: characterStore.currentCharacter?.name || '',
         dayCount: dayCycle.dayCount,
@@ -316,7 +315,7 @@ async function recordGameEvent() {
   const lastMsg = chatStore.messages[chatStore.messages.length - 1]
   if (lastMsg && lastMsg.role === 'assistant' && lastMsg.content) {
     const sid2 = sessionStore.currentSessionId
-    const cid = selectedCharId.value || characterStore.currentCharacterId
+    const cid = characterStore.currentCharacterId
     if (sid2 && cid) {
       const playerNames = characterStore.characters.map(c => c.name)
       await syncItemsFromMessage(sid2, cid, lastMsg.content, playerNames)
@@ -364,16 +363,14 @@ async function handleDiceRoll(expression) {
   // 如果有待处理的检定请求，使用统一检定计算加权
   const checkReq = pendingCheck.value
   if (checkReq && !checkResponded.value) {
-    const char = selectedCharId.value
-      ? characterStore.characters.find(c => c.id === selectedCharId.value)
-      : characterStore.characters[0]
+    const char = characterStore.currentCharacter || characterStore.characters[0]
     if (char) {
       const result = performUnifiedCheck(char, checkReq.checkType, checkReq.difficulty)
-      await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
+      await logCheckResult(sessionStore.currentSessionId, characterStore.currentCharacterId, result)
       const msg = formatCheckResult(result)
       await chatStore.addMessage({
         sessionId: sessionStore.currentSessionId,
-        characterId: selectedCharId.value,
+        characterId: characterStore.currentCharacterId,
         role: 'dice',
         content: msg,
         type: 'dice'
@@ -386,11 +383,11 @@ async function handleDiceRoll(expression) {
   }
 
   // 普通投骰（无检定请求或已响应）
-  const result = await roll(expression, sessionStore.currentSessionId, selectedCharId.value)
+  const result = await roll(expression, sessionStore.currentSessionId, characterStore.currentCharacterId)
   if (result) {
     await chatStore.addMessage({
       sessionId: sessionStore.currentSessionId,
-      characterId: selectedCharId.value,
+      characterId: characterStore.currentCharacterId,
       role: 'dice',
       content: result.detail,
       type: 'dice'
@@ -429,7 +426,7 @@ async function handleChoiceSelect(choiceText) {
 
   await chatStore.addMessage({
     sessionId: sessionStore.currentSessionId,
-    characterId: selectedCharId.value,
+    characterId: characterStore.currentCharacterId,
     role: 'user',
     content: choiceText,
     type: 'chat'
@@ -530,7 +527,7 @@ async function sendMessage() {
   // 添加用户消息
   await chatStore.addMessage({
     sessionId: sessionStore.currentSessionId,
-    characterId: selectedCharId.value,
+    characterId: characterStore.currentCharacterId,
     role: 'user',
     content: text,
     type: 'chat'
@@ -577,14 +574,12 @@ async function quickCheck(statName, statValue) {
   // 如有待处理检定请求，使用统一检定
   const checkReq = pendingCheck.value
   if (checkReq && !checkResponded.value) {
-    const char = selectedCharId.value
-      ? characterStore.characters.find(c => c.id === selectedCharId.value)
-      : characterStore.characters[0]
+    const char = characterStore.currentCharacter || characterStore.characters[0]
     if (char) {
       const result = performUnifiedCheck(char, checkReq.checkType, checkReq.difficulty)
-      await logCheckResult(sessionStore.currentSessionId, selectedCharId.value, result)
+      await logCheckResult(sessionStore.currentSessionId, characterStore.currentCharacterId, result)
       const msg = formatCheckResult(result)
-      await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, characterId: selectedCharId.value, role: 'dice', content: msg, type: 'dice' })
+      await chatStore.addMessage({ sessionId: sessionStore.currentSessionId, characterId: characterStore.currentCharacterId, role: 'dice', content: msg, type: 'dice' })
       checkResponded.value = true
       await continueAfterCheck(msg)
       return
@@ -592,11 +587,11 @@ async function quickCheck(statName, statValue) {
   }
 
   // 普通快捷检定
-  const result = await abilityCheck(statName, statValue, sessionStore.currentSessionId, selectedCharId.value)
+  const result = await abilityCheck(statName, statValue, sessionStore.currentSessionId, characterStore.currentCharacterId)
   if (result) {
     await chatStore.addMessage({
       sessionId: sessionStore.currentSessionId,
-      characterId: selectedCharId.value,
+      characterId: characterStore.currentCharacterId,
       role: 'dice',
       content: `${result.label}: ${result.detail}`,
       type: 'dice'
@@ -614,6 +609,26 @@ function roleLabel(role) {
   const map = { user: '玩家', assistant: 'DM', system: '系统', dice: '骰子' }
   return map[role] || role
 }
+
+function charColor(name) {
+  let hash = 0
+  for (const c of name || '?') hash = ((hash << 5) - hash) + c.charCodeAt(0)
+  return `hsl(${Math.abs(hash) % 360}, 25%, 50%)`
+}
+
+const ATTR_LABELS = { str:'力量',dex:'敏捷',con:'体质',int:'智力',wis:'感知',cha:'魅力', spirit:'灵性',physique:'体能',sanity:'理智',charm:'魅力',lore:'学识',will:'意志', pow:'意志',app:'外貌',edu:'教育',siz:'体型',luck:'幸运' }
+function attrLabel(key) { return ATTR_LABELS[key] || key.toUpperCase() }
+
+const currentCharAttrs = computed(() => {
+  const char = characterStore.currentCharacter
+  if (!char) return {}
+  const skip = new Set(['id','sessionId','name','race','class','level','pathway','hp','maxHp','mp','maxMp','equipment','skills','skillSheet','growth','npcAffinity','status','avatar','background','surnameMeaning','createdAt'])
+  const attrs = {}
+  for (const [k, v] of Object.entries(char)) {
+    if (!skip.has(k) && typeof v === 'number' && !k.startsWith('_')) attrs[k] = v
+  }
+  return attrs
+})
 </script>
 
 <template>
@@ -625,27 +640,21 @@ function roleLabel(role) {
       </div>
     </Transition>
 
-    <!-- 顶部工具栏 -->
-    <div class="flex justify-between items-center">
-      <span class="text-xs text-ink-muted">
-        今日事件: {{ dayCycle?.eventsToday?.value ?? 0 }}/{{ dayCycle?.maxEventsPerDay ?? 4 }}
+    <!-- 顶部工具栏：移动端滑动选项卡，桌面端并排 -->
+    <div class="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide">
+      <!-- 今日事件（始终首位） -->
+      <span class="text-xs text-ink-muted whitespace-nowrap flex-shrink-0">
+        今日 {{ dayCycle?.eventsToday?.value ?? 0 }}/{{ dayCycle?.maxEventsPerDay ?? 4 }}
       </span>
-      <div class="flex gap-2">
-        <button class="btn-ghost text-xs" @click="showCombat = !showCombat">
-          {{ showCombat ? '隐藏' : '⚔️' }} 战斗面板
-        </button>
-        <button class="btn-ghost text-xs" @click="showStats = !showStats">
-          📊 数据
-        </button>
-        <button class="btn-ghost text-xs" @click="showSaveDialog = true">
-          💾 手动存档
-        </button>
-        <button class="btn-ghost text-xs" @click="showExport = true">
-          导出记录
-        </button>
-        <button class="btn-ghost text-xs" @click="vizRefreshKey++">
-          刷新图表
-        </button>
+      <span class="text-ink-muted/20 flex-shrink-0">|</span>
+      <!-- 滑动选项卡 -->
+      <div class="flex gap-1.5 flex-nowrap overflow-x-auto scrollbar-hide">
+        <button class="tab-pill text-[10px] whitespace-nowrap" :class="gameMode === 'guided' ? 'tab-active' : ''" @click="gameMode = 'guided'">引导</button>
+        <button class="tab-pill text-[10px] whitespace-nowrap" :class="gameMode === 'free' ? 'tab-active' : ''" @click="gameMode = 'free'">自由</button>
+        <button class="tab-pill text-[10px] whitespace-nowrap" :class="showCombat ? 'tab-active' : ''" @click="showCombat = !showCombat">⚔️ 战斗</button>
+        <button class="tab-pill text-[10px] whitespace-nowrap" :class="showStats ? 'tab-active' : ''" @click="showStats = !showStats">📊 数据</button>
+        <button class="tab-pill text-[10px] whitespace-nowrap" @click="showSaveDialog = true">💾 存档</button>
+        <button class="tab-pill text-[10px] whitespace-nowrap" @click="showExport = true">导出</button>
       </div>
     </div>
 
@@ -684,36 +693,6 @@ function roleLabel(role) {
           <span class="text-[9px] text-ink-muted/60">
             事件 {{ dayCycle?.eventsToday?.value ?? 0 }}/{{ dayCycle?.maxEventsPerDay ?? 4 }}
           </span>
-        </div>
-        <div class="flex gap-2 items-center">
-          <!-- 游戏模式切换 -->
-          <div class="relative group">
-            <button
-              class="text-xs px-2.5 py-1 rounded-full transition-all"
-              :class="gameMode === 'guided'
-                ? 'bg-[#5A5550]/10 text-[#5A5550] border border-[#5A5550]/20'
-                : 'text-ink-muted/40 hover:text-ink-muted'"
-              @click="gameMode = 'guided'"
-            >引导模式</button>
-            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-[#3A3530] text-[#F5F0E8] text-[10px] rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 delay-1000 pointer-events-none z-[200]">
-              AI 提供选项按钮，引导剧情推进
-              <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-0.5 w-2 h-2 bg-[#3A3530] rotate-45"></div>
-            </div>
-          </div>
-          <span class="text-[10px] text-ink-muted/30">|</span>
-          <div class="relative group">
-            <button
-              class="text-xs px-2.5 py-1 rounded-full transition-all"
-              :class="gameMode === 'free'
-                ? 'bg-[#5A7A5A]/10 text-[#5A7A5A] border border-[#5A7A5A]/20'
-                : 'text-ink-muted/40 hover:text-ink-muted'"
-              @click="gameMode = 'free'"
-            >自由模式</button>
-            <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-[#3A3530] text-[#F5F0E8] text-[10px] rounded-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-300 delay-1000 pointer-events-none z-[200]">
-              自由探索，AI 描述场景中的可交互目标
-              <div class="absolute top-full left-1/2 -translate-x-1/2 -mt-0.5 w-2 h-2 bg-[#3A3530] rotate-45"></div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -782,15 +761,6 @@ function roleLabel(role) {
       <!-- 输入区 -->
       <div class="px-4 py-3 border-t border-[#E8E2D8]">
         <div class="flex gap-2">
-          <select
-            v-model="selectedCharId"
-            class="input-parchment text-xs w-28"
-          >
-            <option :value="null">全体</option>
-            <option v-for="c in characterStore.characters" :key="c.id" :value="c.id">
-              {{ c.name }}
-            </option>
-          </select>
           <input
             v-model="userInput"
             class="input-parchment flex-1 text-sm transition-colors"
@@ -817,10 +787,10 @@ function roleLabel(role) {
       </div>
       <!-- 背包栏（输入框下方） -->
       <InventoryBar
-        v-if="selectedCharId || characterStore.currentCharacterId"
+        v-if="characterStore.currentCharacterId"
         ref="inventoryRef"
         :session-id="sessionStore.currentSessionId"
-        :character-id="selectedCharId || characterStore.currentCharacterId"
+        :character-id="characterStore.currentCharacterId"
       />
 
       <!-- 回到底部按钮（聊天窗内悬浮） -->
@@ -925,34 +895,42 @@ function roleLabel(role) {
         </div>
       </CardWrapper>
 
-      <!-- 属性快捷检定 -->
+      <!-- 角色状态卡片 -->
       <CardWrapper class="p-4 flex-1 overflow-y-auto">
-        <h4 class="text-sm text-ink-secondary tracking-wide mb-3">快捷检定</h4>
-        <div v-if="selectedCharId && characterStore.currentCharacter" class="space-y-2">
-          <div
-            v-for="stat in ['str','dex','con','int','wis','cha']"
-            :key="stat"
-            class="flex items-center gap-2 p-2 rounded-lg hover:bg-[#F5F0E8] cursor-pointer transition-colors"
-            @click="quickCheck(stat, characterStore.currentCharacter[stat])"
-          >
-            <span class="text-xs text-ink-secondary w-10">{{ statLabels[stat] }}</span>
-            <div class="flex-1">
-              <ProgressBar
-                :value="characterStore.currentCharacter[stat]"
-                :max="20"
-                :color="stat === 'str' ? '#8B6A6A' : stat === 'dex' ? '#7A8B6A' : stat === 'con' ? '#6A7A8B' : stat === 'int' ? '#8B7A6A' : stat === 'wis' ? '#6A8B7A' : '#7A6A8B'"
-                :show-value="false"
-              />
+        <h4 class="text-sm text-ink-secondary tracking-wide mb-3">角色状态</h4>
+        <div v-if="characterStore.currentCharacter" class="space-y-3">
+          <!-- 基本信息 -->
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-full flex items-center justify-center text-white text-sm flex-shrink-0" :style="{ backgroundColor: charColor(characterStore.currentCharacter.name) }">
+              {{ characterStore.currentCharacter.name?.charAt(0) }}
             </div>
-            <span class="text-xs text-ink-primary font-medium w-6 text-right">
-              {{ characterStore.currentCharacter[stat] >= 10 ? '+' : '' }}{{ Math.floor((characterStore.currentCharacter[stat] - 10) / 2) }}
-            </span>
-            <span class="text-[10px] text-ink-muted opacity-0 hover:opacity-100">d20</span>
+            <div class="min-w-0">
+              <p class="text-xs font-medium text-ink-primary truncate">{{ characterStore.currentCharacter.name }}</p>
+              <p class="text-[9px] text-ink-muted">{{ characterStore.currentCharacter.race }} · {{ characterStore.currentCharacter.class }} Lv.{{ characterStore.currentCharacter.level || 1 }}</p>
+            </div>
+          </div>
+          <!-- HP 条 -->
+          <div class="space-y-1">
+            <div class="flex justify-between text-[9px]">
+              <span class="text-ink-muted">HP</span>
+              <span class="text-ink-primary font-medium">{{ characterStore.currentCharacter.hp ?? characterStore.currentCharacter.maxHp ?? 10 }}/{{ characterStore.currentCharacter.maxHp ?? 10 }}</span>
+            </div>
+            <ProgressBar :value="characterStore.currentCharacter.hp ?? 10" :max="characterStore.currentCharacter.maxHp ?? 10" color="#8B6A6A" :show-value="false" />
+          </div>
+          <!-- 属性列表（自适应D&D/LOTM/COC） -->
+          <div class="grid grid-cols-2 gap-1.5">
+            <div v-for="(val, key) in currentCharAttrs" :key="key" class="flex justify-between items-center text-[10px] bg-[#F5F0E8] rounded px-2 py-1">
+              <span class="text-ink-muted">{{ attrLabel(key) }}</span>
+              <span class="text-ink-primary font-medium">{{ val }} <span class="text-[8px] text-ink-muted">({{ val >= 10 ? '+' : '' }}{{ Math.floor((val - 10) / 2) }})</span></span>
+            </div>
+          </div>
+          <!-- 背景 + 特殊姓氏 -->
+          <div v-if="characterStore.currentCharacter.background || characterStore.currentCharacter.surnameMeaning" class="space-y-1 text-[9px]">
+            <p v-if="characterStore.currentCharacter.background" class="text-ink-muted leading-relaxed">📖 {{ characterStore.currentCharacter.background }}</p>
+            <p v-if="characterStore.currentCharacter.surnameMeaning" class="text-[#8B6A5A] leading-relaxed">🛡️ {{ characterStore.currentCharacter.surnameMeaning }}</p>
           </div>
         </div>
-        <div v-else class="text-xs text-ink-muted text-center py-4">
-          选择角色以进行属性检定
-        </div>
+        <div v-else class="text-xs text-ink-muted text-center py-4">选择角色以查看状态</div>
       </CardWrapper>
 
       <!-- 投骰历史 -->

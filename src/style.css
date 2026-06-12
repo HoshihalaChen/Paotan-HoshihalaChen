@@ -129,3 +129,32 @@ body {
 .dice-rolling {
   animation: diceRoll 0.8s ease-in-out;
 }
+
+/* ========== 滑动选项卡 ========== */
+.tab-pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid #E8E2D8;
+  color: #8B8580;
+  background: transparent;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+.tab-pill:hover {
+  background: #F5F0E8;
+  color: #5A5550;
+}
+.tab-pill.tab-active {
+  background: #5A5550;
+  color: #F5F0E8;
+  border-color: #5A5550;
+}
+
+/* 隐藏滚动条但保留滚动功能 */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
