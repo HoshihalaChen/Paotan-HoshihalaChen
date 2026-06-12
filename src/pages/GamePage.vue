@@ -225,7 +225,7 @@ ${hasSpecialSurnames ? `
         clearTimeout(timeout)
         console.error('Opening narration failed, using fallback:', err.message)
         const fallback = `欢迎来到《${modName}》的世界！\n\n你环顾四周，空气中弥漫着冒险的气息。远处有什么在召唤着你——也许是命运，也许是危险，也许是宝藏。\n\n你的故事即将开始。你打算怎么做？\n1. 观察周围的环境\n2. 寻找附近的城镇或村庄\n3. 检查你的装备和物资`
-        chatStore.streamingContent.value = fallback
+        chatStore.streamingContent = fallback
         await chatStore.finishStreaming(sessionId, null)
         openingNarrationDone.value = true
         scrollToBottom()
@@ -237,8 +237,8 @@ ${hasSpecialSurnames ? `
     console.error('generateOpeningNarration error:', e)
     // 兜底：直接生成本地开场白
     const fallback = `欢迎来到《${modName}》的世界！\n\n你环顾四周，空气中弥漫着冒险的气息。\n\n你的故事即将开始。你打算怎么做？\n1. 观察周围的环境\n2. 寻找附近的城镇或村庄\n3. 检查你的装备和物资`
-    if (!chatStore.streamingContent.value) {
-      chatStore.streamingContent.value = fallback
+    if (!chatStore.streamingContent) {
+      chatStore.streamingContent = fallback
     }
     await chatStore.finishStreaming(sessionId, null)
     openingNarrationDone.value = true
