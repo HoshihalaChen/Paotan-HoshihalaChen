@@ -119,7 +119,7 @@ function selectChoice(choice) {
       <button
         v-for="(choice, i) in parsedChoices"
         :key="i"
-        class="text-sm px-4 py-2 rounded-lg border transition-all duration-200
+        class="text-sm text-left px-4 py-2 rounded-lg border transition-all duration-200
                bg-[#FAF7F2] border-[#D8D2C8] text-ink-primary
                hover:bg-[#5A5550] hover:text-[#F5F0E8] hover:border-[#5A5550]
                active:scale-[0.97] cursor-pointer"
