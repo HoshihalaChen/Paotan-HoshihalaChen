@@ -270,3 +270,41 @@ export async function exportSelectedArchives(archiveIds) {
   URL.revokeObjectURL(url)
   return valid.length
 }
+
+/**
+ * 从导出的 JSON 导入存档到本地数据库
+ * @param {Array} archivesData — 导出格式的存档数组 [{moduleName, characterName, dayCount, createdAt, saveType, content}]
+ * @returns {number} 成功导入的数量
+ */
+export async function importArchives(archivesData) {
+  if (!Array.isArray(archivesData)) throw new Error('无效的存档文件格式')
+
+  let imported = 0
+  for (const item of archivesData) {
+    try {
+      // 跳过模组+角色+天数完全相同的重复存档
+      const existing = await db.archives
+        .where({ moduleName: item.moduleName, characterName: item.characterName, dayCount: item.dayCount })
+        .count()
+      if (existing > 0) continue
+
+      const snapshot = item.content || {}
+
+      await db.archives.add({
+        sessionId: 0, // 导入存档使用 sessionId=0 标记为外部导入
+        characterId: 0,
+        moduleName: item.moduleName || '未知模组',
+        characterName: item.characterName || '未知角色',
+        dayCount: item.dayCount || 0,
+        createdAt: item.createdAt || Date.now(),
+        saveType: item.saveType || 'manual',
+        content: JSON.stringify(snapshot)
+      })
+      imported++
+    } catch (e) {
+      console.warn('[Archive] 导入条目失败:', e.message)
+    }
+  }
+  console.log(`[Archive] 导入完成: ${imported} 条`)
+  return imported
+}

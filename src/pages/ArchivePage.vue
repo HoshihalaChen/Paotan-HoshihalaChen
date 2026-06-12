@@ -9,7 +9,8 @@ import { useModuleContextStore } from '../stores/moduleContext.js'
 import { useDayCycleStore } from '../stores/dayCycle.js'
 import {
   getGlobalArchivesGrouped, getRecommendedArchive, getManualArchives,
-  restoreArchive, deleteArchive, exportSelectedArchives, createArchive
+  restoreArchive, deleteArchive, exportSelectedArchives, createArchive,
+  importArchives
 } from '../services/archive.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
 
@@ -184,6 +185,34 @@ async function exportSelected() {
   await exportSelectedArchives([...selectedIds.value])
 }
 
+const fileInput = ref(null)
+const importMsg = ref('')
+
+function triggerImport() {
+  fileInput.value?.click()
+}
+
+async function handleFileImport(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
+  importMsg.value = '导入中...'
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+    const count = await importArchives(data)
+    importMsg.value = `成功导入 ${count} 条存档`
+    // 刷新
+    charSlots.value = {}
+    groupedArchives.value = await getGlobalArchivesGrouped()
+    setTimeout(() => { importMsg.value = '' }, 3000)
+  } catch (err) {
+    importMsg.value = '导入失败: ' + (err.message || '格式错误')
+    setTimeout(() => { importMsg.value = '' }, 4000)
+  }
+  // 清空 file input 以允许重复导入同一文件
+  e.target.value = ''
+}
+
 function charColor(name) {
   let hash = 0
   for (const c of name || '?') hash = ((hash << 5) - hash) + c.charCodeAt(0)
@@ -203,6 +232,9 @@ function charColor(name) {
         <button class="btn-ghost text-xs" @click="loadData" :disabled="loading">{{ loading ? '加载中...' : '刷新' }}</button>
         <button class="btn-ghost text-xs" @click="manualSaveCurrent">💾 手动存档</button>
         <button v-if="selectedIds.size > 0" class="btn-primary text-xs" @click="exportSelected">导出选中 ({{ selectedIds.size }})</button>
+        <button class="btn-ghost text-xs" @click="triggerImport">📥 导入存档</button>
+        <input ref="fileInput" type="file" accept=".json" class="hidden" @change="handleFileImport" />
+        <span v-if="importMsg" class="text-xs" :class="importMsg.includes('失败') ? 'text-red-500' : 'text-[#5A7A5A]'">{{ importMsg }}</span>
       </div>
     </div>
 

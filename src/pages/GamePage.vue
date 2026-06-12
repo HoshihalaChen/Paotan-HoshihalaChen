@@ -165,10 +165,13 @@ async function generateOpeningNarrationIfNeeded() {
   const modSystem = mod.system || sessionStore.currentSession?.system || ''
   const modBackground = mod.background || ''
 
-  // 加载规则书
-  const { getRulebook, formatRulebookForPrompt } = await import('../../modules/index.js')
-  const rules = await getRulebook(modSystem)
-  const rulesText = formatRulebookForPrompt(rules)
+  // 加载规则书（安全回退）
+  let rulesText = ''
+  try {
+    const { getRulebook, formatRulebookForPrompt } = await import('../../modules/index.js')
+    const rules = await getRulebook(modSystem)
+    rulesText = formatRulebookForPrompt(rules)
+  } catch { rulesText = '' }
 
   const hasSpecialSurnames = characters.some(c => c.surnameMeaning)
 
@@ -209,19 +212,27 @@ ${hasSpecialSurnames ? `
   chatStore.startStreaming()
   let abortController = new AbortController()
 
+  // 15秒超时保护
+  const timeout = setTimeout(() => {
+    if (!openingNarrationDone.value) {
+      abortController.abort()
+    }
+  }, 15000)
+
   try {
     await streamChat(messages, {
       onToken: (token) => {
         chatStore.appendStreamToken(token)
       },
       onDone: async () => {
+        clearTimeout(timeout)
         await chatStore.finishStreaming(sessionId, null)
         openingNarrationDone.value = true
         scrollToBottom()
       },
       onError: async (err) => {
+        clearTimeout(timeout)
         console.error('Opening narration failed, using fallback:', err.message)
-        // 回退：简短本地开场
         const fallback = `欢迎来到《${modName}》的世界！\n\n你环顾四周，空气中弥漫着冒险的气息。远处有什么在召唤着你——也许是命运，也许是危险，也许是宝藏。\n\n你的故事即将开始。你打算怎么做？\n1. 观察周围的环境\n2. 寻找附近的城镇或村庄\n3. 检查你的装备和物资`
         chatStore.streamingContent.value = fallback
         await chatStore.finishStreaming(sessionId, null)
@@ -231,9 +242,16 @@ ${hasSpecialSurnames ? `
       signal: abortController.signal
     })
   } catch (e) {
+    clearTimeout(timeout)
     console.error('generateOpeningNarration error:', e)
-    chatStore.finishStreaming(sessionId, null)
+    // 兜底：直接生成本地开场白
+    const fallback = `欢迎来到《${modName}》的世界！\n\n你环顾四周，空气中弥漫着冒险的气息。\n\n你的故事即将开始。你打算怎么做？\n1. 观察周围的环境\n2. 寻找附近的城镇或村庄\n3. 检查你的装备和物资`
+    if (!chatStore.streamingContent.value) {
+      chatStore.streamingContent.value = fallback
+    }
+    await chatStore.finishStreaming(sessionId, null)
     openingNarrationDone.value = true
+    scrollToBottom()
   }
 }
 
