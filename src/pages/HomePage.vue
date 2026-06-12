@@ -293,7 +293,7 @@ function avatarColor(index) {
 
       <!-- ===== 模组预览卡片 ===== -->
       <section>
-        <div class="flex items-center justify-between mb-3">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-3 gap-2">
           <h3 class="text-sm text-ink-secondary tracking-wide">
             本地模组库 <span class="text-ink-muted text-xs">({{ allModules.length }} 个)</span>
           </h3>
@@ -312,7 +312,7 @@ function avatarColor(index) {
           </div>
         </div>
 
-        <div class="grid grid-cols-3 gap-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
           <CardWrapper
             v-for="mod in filteredModules" :key="mod.id"
             class="flex flex-col transition-all p-5 cursor-pointer group"
@@ -352,8 +352,8 @@ function avatarColor(index) {
       </section>
 
       <!-- ===== 自定义创建表单 + 队伍头像区 ===== -->
-      <div class="grid grid-cols-3 gap-6">
-        <CardWrapper class="col-span-2 p-6">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <CardWrapper class="md:col-span-2 p-6">
           <h3 class="text-sm text-ink-secondary tracking-wide mb-4">自定义冒险</h3>
           <div class="space-y-4">
             <div>

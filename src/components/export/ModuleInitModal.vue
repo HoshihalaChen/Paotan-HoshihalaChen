@@ -652,6 +652,9 @@ function charColor(name) {
                         >
                           <option v-for="c in charCreation.classes" :key="c" :value="c">{{ c }}</option>
                         </select>
+                        <div v-if="effectiveClassMods[newCharForm.class]" class="flex flex-wrap gap-0.5 mt-0.5">
+                          <span v-for="(v, k) in effectiveClassMods[newCharForm.class]" :key="k" class="text-[7px] px-1 rounded" :class="v >= 0 ? 'bg-[#5A7A5A]/10 text-[#5A7A5A]' : 'bg-red-100 text-red-400'">{{ attributes.find(a=>a.key===k)?.label||k }}{{ v>=0?'+':'' }}{{ v }}</span>
+                        </div>
                       </div>
                       <div>
                         <label class="text-[10px] text-ink-muted">种族</label>
@@ -663,6 +666,9 @@ function charColor(name) {
                         >
                           <option v-for="r in charCreation.races" :key="r" :value="r">{{ r }}</option>
                         </select>
+                        <div v-if="effectiveRaceMods[newCharForm.race]" class="flex flex-wrap gap-0.5 mt-0.5">
+                          <span v-for="(v, k) in effectiveRaceMods[newCharForm.race]" :key="k" class="text-[7px] px-1 rounded" :class="v >= 0 ? 'bg-[#5A7A5A]/10 text-[#5A7A5A]' : 'bg-red-100 text-red-400'">{{ attributes.find(a=>a.key===k)?.label||k }}{{ v>=0?'+':'' }}{{ v }}</span>
+                        </div>
                       </div>
                       <div v-if="!hideLevelSelector">
                         <label class="text-[10px] text-ink-muted">{{ statLabel }}</label>
@@ -678,13 +684,20 @@ function charColor(name) {
                       </div>
                     </div>
 
-                    <!-- 属性数值（只读参考） -->
+                    <!-- 属性数值（含职业/种族加成明细） -->
                     <div class="border-t border-[#D8D2C8] pt-2">
-                      <p class="text-[9px] text-ink-muted/50 mb-1">初始属性（由职业+种族决定，不可手动更改）</p>
-                      <div class="grid grid-cols-3 gap-x-2 gap-y-1">
-                        <div v-for="attr in attributes" :key="attr.key" class="flex items-center gap-1">
-                          <span class="text-[9px] text-ink-muted w-8" :title="attr.desc">{{ attr.label }}</span>
-                          <span class="text-xs text-ink-primary font-medium w-full text-center py-0.5 bg-[#FAF7F2] rounded">{{ currentCombinedAttrs[attr.key] ?? 0 }}</span>
+                      <p class="text-[9px] text-ink-muted/50 mb-2">初始属性 = 基础值 + 职业加成 + 种族加成</p>
+                      <div class="space-y-1">
+                        <div v-for="attr in attributes" :key="attr.key" class="flex items-center gap-1 text-[9px]">
+                          <span class="text-ink-muted w-8" :title="attr.desc">{{ attr.label }}</span>
+                          <span class="font-medium w-6 text-center text-ink-primary">{{ currentCombinedAttrs[attr.key] ?? 0 }}</span>
+                          <span class="text-ink-muted/40">= {{ charCreation.attrBase || 3 }}</span>
+                          <span
+                            :class="(effectiveClassMods[newCharForm.class]?.[attr.key] || 0) >= 0 ? 'text-[#5A7A5A]' : 'text-red-400'"
+                          >{{ (effectiveClassMods[newCharForm.class]?.[attr.key] || 0) >= 0 ? '+' : '' }}{{ effectiveClassMods[newCharForm.class]?.[attr.key] || 0 }} <span class="text-ink-muted/30">职</span></span>
+                          <span
+                            :class="(effectiveRaceMods[newCharForm.race]?.[attr.key] || 0) >= 0 ? 'text-[#5A7A5A]' : 'text-red-400'"
+                          >{{ (effectiveRaceMods[newCharForm.race]?.[attr.key] || 0) >= 0 ? '+' : '' }}{{ effectiveRaceMods[newCharForm.race]?.[attr.key] || 0 }} <span class="text-ink-muted/30">族</span></span>
                         </div>
                       </div>
                     </div>
