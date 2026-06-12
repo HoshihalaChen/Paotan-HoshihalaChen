@@ -27,7 +27,6 @@ const navItems = [
 
 /** 切换页面，若从游戏页离开则自动存档 */
 async function navigateTo(key) {
-  // 如果当前在游戏页面且游戏激活，自动存档
   if (ui.activePage === 'game' && sessionStore.isGameActive) {
     try {
       await createArchive(sessionStore.currentSessionId, characterStore.currentCharacterId, {
@@ -39,15 +38,33 @@ async function navigateTo(key) {
     } catch (e) { /* 静默 */ }
   }
   ui.setPage(key)
+  ui.mobileMenuOpen = false
 }
 </script>
 
 <template>
+  <!-- 移动端汉堡按钮 -->
+  <button
+    class="fixed top-3 left-3 z-[60] w-9 h-9 rounded-lg bg-sidebar-bg flex items-center justify-center shadow md:hidden"
+    @click="ui.mobileMenuOpen = !ui.mobileMenuOpen"
+  >
+    <span class="text-[#F5F0E8] text-lg">{{ ui.mobileMenuOpen ? '✕' : '☰' }}</span>
+  </button>
+
+  <!-- 移动端遮罩 -->
+  <div
+    v-if="ui.mobileMenuOpen"
+    class="fixed inset-0 bg-black/40 z-40 md:hidden"
+    @click="ui.mobileMenuOpen = false"
+  />
+
+  <!-- 侧边栏 -->
   <aside
-    class="fixed left-0 top-0 h-full w-[220px] bg-sidebar-bg flex flex-col select-none z-50"
+    class="fixed left-0 top-0 h-full w-[220px] bg-sidebar-bg flex flex-col select-none z-50 transition-transform duration-300"
+    :class="ui.mobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'"
     style="box-shadow: 1px 0 0 rgba(0,0,0,0.08);"
   >
-    <!-- Logo 区域 -->
+    <!-- Logo -->
     <div class="flex items-center gap-3 px-5 py-6 border-b border-[#4A4A4C]/50">
       <CompassLogo />
       <div>
@@ -56,7 +73,7 @@ async function navigateTo(key) {
       </div>
     </div>
 
-    <!-- 导航菜单 -->
+    <!-- 导航 -->
     <nav class="flex-1 py-4 flex flex-col gap-1">
       <button
         v-for="item in navItems"
@@ -70,7 +87,7 @@ async function navigateTo(key) {
       </button>
     </nav>
 
-    <!-- 底部信息 -->
+    <!-- 底部 -->
     <div class="px-5 py-4 border-t border-[#4A4A4C]/50">
       <p class="text-[10px] text-sidebar-text/40 tracking-wide">v1.0 · DND 5E</p>
     </div>

@@ -64,6 +64,7 @@ const showExport = ref(false)
 const showSaveDialog = ref(false)
 const combatState = ref(null)
 const inventoryRef = ref(null)
+const showDiceMobile = ref(false)
 
 // 游戏模式：引导模式(默认) / 自由模式
 const gameMode = ref('guided')  // 'guided' | 'free'
@@ -639,9 +640,9 @@ function roleLabel(role) {
       @update:enemies="enemies = $event"
     />
 
-  <div class="flex gap-4" style="min-height: calc(100vh - 180px); max-height: calc(100vh - 150px);">
+  <div class="flex flex-col md:flex-row gap-3 md:gap-4" style="max-height: calc(100vh - 130px); min-height: calc(100vh - 220px);">
     <!-- ===== 左侧：聊天窗口 ===== -->
-    <CardWrapper class="flex-1 flex flex-col p-0 overflow-hidden">
+    <CardWrapper class="flex-1 flex flex-col p-0 overflow-hidden min-h-0 relative">
       <!-- 聊天头部 -->
       <div class="flex items-center justify-between px-4 py-3 border-b border-[#E8E2D8]">
         <div class="flex items-center gap-3">
@@ -747,18 +748,6 @@ function roleLabel(role) {
           <p class="text-xs text-red-400 bg-red-50 px-3 py-1 rounded-full">{{ aiError }}</p>
         </div>
 
-        <!-- 滚动到底部按钮 -->
-        <Transition name="fade">
-          <button
-            v-if="showScrollBtn"
-            class="absolute bottom-4 right-4 w-8 h-8 rounded-full bg-[#5A5550] text-[#F5F0E8] flex items-center justify-center shadow-md hover:bg-[#4A4540] transition-all z-10"
-            title="滚动到底部"
-            @click="scrollToBottom"
-          >
-            ↓
-          </button>
-        </Transition>
-
         <!-- 选项按钮 — 引导模式下从AI回复中解析可点击选项 -->
         <div v-if="gameMode === 'guided'" class="flex justify-start">
           <div class="max-w-[75%]">
@@ -815,10 +804,24 @@ function roleLabel(role) {
         :session-id="sessionStore.currentSessionId"
         :character-id="selectedCharId || characterStore.currentCharacterId"
       />
+
+      <!-- 回到底部按钮（聊天窗内悬浮） -->
+      <Transition name="fade">
+        <button
+          v-if="showScrollBtn"
+          class="absolute bottom-20 right-5 w-10 h-10 rounded-full bg-[#5A5550]/90 text-[#F5F0E8] flex items-center justify-center shadow-lg hover:bg-[#4A4540] transition-all z-10"
+          title="回到底部"
+          @click="scrollToBottom"
+        >↓</button>
+      </Transition>
     </CardWrapper>
 
+    <!-- 移动端骰子切换按钮 -->
+    <button class="md:hidden text-xs text-ink-muted text-center py-1" @click="showDiceMobile = !showDiceMobile">
+      {{ showDiceMobile ? '隐藏' : '🎲' }} 骰子面板
+    </button>
     <!-- ===== 右侧：骰子面板 ===== -->
-    <div class="w-[320px] flex-shrink-0 flex flex-col gap-4" :class="pendingCheck && !checkResponded ? 'animate-pulse' : ''">
+    <div class="w-full md:w-[320px] flex-shrink-0 flex-col gap-4" :class="[pendingCheck && !checkResponded ? 'animate-pulse' : '', showDiceMobile ? 'flex' : 'hidden md:flex']">
       <!-- d20 数值面板 -->
       <CardWrapper class="p-4" :class="pendingCheck && !checkResponded ? 'ring-2 ring-amber-400/50 !border-amber-300' : ''">
         <div class="flex items-center justify-between mb-4">

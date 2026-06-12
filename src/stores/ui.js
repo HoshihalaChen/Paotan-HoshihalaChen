@@ -5,14 +5,16 @@ import { ref } from 'vue'
 export const useUIStore = defineStore('ui', () => {
   const activePage = ref('home')
   const sidebarCollapsed = ref(false)
+  const mobileMenuOpen = ref(false)
 
   function setPage(page) {
     activePage.value = page
+    mobileMenuOpen.value = false
   }
 
   function toggleSidebar() {
     sidebarCollapsed.value = !sidebarCollapsed.value
   }
 
-  return { activePage, sidebarCollapsed, setPage, toggleSidebar }
+  return { activePage, sidebarCollapsed, mobileMenuOpen, setPage, toggleSidebar }
 })
