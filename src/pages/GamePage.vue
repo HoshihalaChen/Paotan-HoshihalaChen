@@ -16,6 +16,7 @@ import { streamChat } from '../services/deepseek.js'
 import { useDayCycleStore } from '../stores/dayCycle.js'
 import { useBackup } from '../composables/useBackup.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
+import CompassLogo from '../components/common/CompassLogo.vue'
 import DiceIcon from '../components/common/DiceIcon.vue'
 import ProgressBar from '../components/common/ProgressBar.vue'
 import CombatStats from '../components/visualization/CombatStats.vue'
@@ -101,6 +102,8 @@ const diceTab = ref('d20') // 'd20' | 'custom' | 'history'
 
 // 标记游戏是否已在该会话中初始化过日期
 const dateInitialized = ref(false)
+// 标记游戏是否已开始（用于控制开场白生成）
+const gameStarted = ref(false)
 // 标记开场白是否已生成
 const openingNarrationDone = ref(false)
 
@@ -110,23 +113,18 @@ onMounted(async () => {
     await characterStore.loadCharacters(sessionStore.currentSessionId)
     await worldStore.loadWorldData(sessionStore.currentSessionId)
 
-    // 仅首次挂载时初始化日期（从已有消息中恢复，不再重新随机）
+    // 检测是否已存在 AI 回复（恢复存档/继续游戏的情况）→ 跳过开场
+    const hasAI = chatStore.messages.some(m => m.role === 'assistant' && m.type === 'chat')
+    if (hasAI) {
+      gameStarted.value = true
+      openingNarrationDone.value = true
+    }
+
+    // 仅首次挂载时初始化日期
     if (!dateInitialized.value && dayCycle.dayCount === 0 && chatStore.messages.length === 0) {
       dayCycle.randomizeStartDate()
-      const dateMsg = `📅 **冒险开始** — ${dayCycle.dateString.value}\n天空中的星辰预示着一段传奇的序幕。`
-      await chatStore.addMessage({
-        sessionId: sessionStore.currentSessionId,
-        role: 'system',
-        content: dateMsg,
-        type: 'system'
-      })
     }
     dateInitialized.value = true
-
-    // 如果没有已生成的 assistant 消息，自动生成角色个性化开场白
-    if (sessionStore.isGameActive) {
-      await generateOpeningNarrationIfNeeded()
-    }
   }
 })
 
@@ -135,14 +133,8 @@ async function generateOpeningNarrationIfNeeded() {
   const sessionId = sessionStore.currentSessionId
   if (!sessionId || openingNarrationDone.value) return
 
-  // 检查是否已有 assistant 类型为 chat 的消息（说明开场白已生成）
-  const hasNarration = chatStore.messages.some(
-    m => m.role === 'assistant' && m.type === 'chat'
-  )
-  if (hasNarration) {
-    openingNarrationDone.value = true
-    return
-  }
+  openingNarrationDone.value = true
+  gameStarted.value = true
 
   // 获取角色列表
   const characters = characterStore.characters
@@ -698,8 +690,21 @@ const currentCharAttrs = computed(() => {
 
       <!-- 消息列表 -->
       <div ref="chatContainer" class="flex-1 overflow-y-auto px-4 py-3 space-y-3 relative" @scroll="onChatScroll">
-        <!-- 空状态 -->
-        <div v-if="chatStore.messages.length === 0 && !aiStreaming" class="flex flex-col items-center justify-center h-full text-ink-muted">
+        <!-- 开始游戏按钮（首次进入） -->
+        <div v-if="!gameStarted && !aiStreaming" class="flex flex-col items-center justify-center h-full text-ink-muted">
+          <CompassLogo />
+          <p class="text-sm mt-4 text-ink-primary font-medium">准备开始冒险</p>
+          <p class="text-xs mt-1 text-ink-muted/60">{{ characterStore.currentCharacter?.name || '冒险者' }} · {{ characterStore.currentCharacter?.race }} {{ characterStore.currentCharacter?.class }}</p>
+          <button
+            class="mt-6 px-8 py-2.5 rounded-lg bg-[#5A5550] text-[#F5F0E8] text-sm tracking-wider hover:bg-[#4A4540] transition-all shadow-md"
+            :disabled="openingNarrationDone"
+            @click="generateOpeningNarrationIfNeeded()"
+          >
+            {{ openingNarrationDone ? '生成中...' : '开始游戏' }}
+          </button>
+        </div>
+        <!-- 空消息提示（游戏已开始但无消息） -->
+        <div v-if="gameStarted && chatStore.messages.length === 0 && !aiStreaming" class="flex flex-col items-center justify-center h-full text-ink-muted">
           <DiceIcon :size="40" class="mb-2 opacity-30" />
           <p class="text-sm">开始你的冒险...</p>
           <p class="text-xs mt-1">输入消息与 DM 对话，或使用 .d20 等骰子指令</p>
