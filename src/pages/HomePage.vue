@@ -10,6 +10,7 @@ import { useDayCycleStore } from '../stores/dayCycle.js'
 import CardWrapper from '../components/common/CardWrapper.vue'
 import CompassLogo from '../components/common/CompassLogo.vue'
 import ModuleInitModal from '../components/export/ModuleInitModal.vue'
+import RoomLobby from '../components/multiplayer/RoomLobby.vue'
 
 const sessionStore = useSessionStore()
 const characterStore = useCharacterStore()
@@ -17,6 +18,14 @@ const chatStore = useChatStore()
 const ui = useUIStore()
 const moduleCtxStore = useModuleContextStore()
 const dayCycleStore = useDayCycleStore()
+
+// 多人模式
+const showLobby = ref(false)
+
+function startMultiGame(data) {
+  showLobby.value = false
+  // 导航由 useMultiplayer 的 GAME_STARTING 消息自动触发
+}
 
 // 加载状态
 const loading = ref(true)
@@ -283,6 +292,7 @@ function avatarColor(index) {
       <!-- ===== 页面标题 ===== -->
       <div class="flex items-center gap-4 mb-2">
         <CompassLogo />
+        <button class="btn-ghost text-xs bg-[#5A7A5A]/10 text-[#5A7A5A] px-3 py-1 rounded-full" @click="showLobby = true">👥 多人模式</button>
         <div>
           <h2 class="text-xl text-ink-primary tracking-wider">新建冒险</h2>
           <p class="text-xs text-ink-muted tracking-wide">
@@ -440,6 +450,11 @@ function avatarColor(index) {
       :module="selectedModule"
       @close="showInitModal = false; selectedModule = null"
       @complete="onInitComplete"
+    />
+    <RoomLobby
+      v-if="showLobby"
+      @close="showLobby = false"
+      @start="startMultiGame"
     />
   </div>
 </template>

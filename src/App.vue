@@ -11,8 +11,11 @@ import WorldPage from './pages/WorldPage.vue'
 import LogPage from './pages/LogPage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
 import ArchivePage from './pages/ArchivePage.vue'
+import MultiGamePage from './pages/MultiGamePage.vue'
+import { useMultiplayer } from './composables/useMultiplayer.js'
 
 const ui = useUIStore()
+const multi = useMultiplayer()
 
 // 全局应用状态 — 不阻塞渲染，后台初始化
 const appReady = ref(true)
@@ -49,6 +52,7 @@ onMounted(async () => {
 
   <AppLayout>
     <HomePage v-if="ui.activePage === 'home'" />
+    <MultiGamePage v-else-if="ui.activePage === 'game' && multi.isInGame.value" />
     <GamePage v-else-if="ui.activePage === 'game'" />
     <CharacterPage v-else-if="ui.activePage === 'character'" />
     <MapPage v-else-if="ui.activePage === 'map'" />

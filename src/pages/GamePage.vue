@@ -25,6 +25,7 @@ import SaveSlotDialog from '../components/export/SaveSlotDialog.vue'
 import InventoryBar from '../components/game/InventoryBar.vue'
 import ChoiceButtons from '../components/chat/ChoiceButtons.vue'
 import { syncItemsFromMessage } from '../services/inventory.js'
+import { useMultiplayer } from '../composables/useMultiplayer.js'
 import { formatTime } from '../utils/format.js'
 import { statLabels } from '../utils/format.js'
 
@@ -38,6 +39,25 @@ const { isStreaming: aiStreaming, streamContent: aiContent, error: aiError, star
 const { exportChat, isExporting } = useExport()
 const dayCycle = useDayCycleStore()
 const backup = useBackup()
+const multi = useMultiplayer()
+
+// 多人模式：监听 WebSocket 消息同步到聊天窗口
+let _multiMsgCount = 0
+watch(() => multi.messages?.value?.length, (len) => {
+  if (!multi.isInGame.value || !len) return
+  const newMsgs = multi.messages.value.slice(_multiMsgCount)
+  _multiMsgCount = len
+  for (const m of newMsgs) {
+    chatStore.messages.push({
+      id: 'multi_' + Date.now() + Math.random(),
+      sessionId: sessionStore.currentSessionId || 0,
+      role: m.role || 'system',
+      content: m.content || m.text || '',
+      type: m.type || 'chat',
+      playerName: m.playerName || ''
+    })
+  }
+})
 
 // 战斗面板
 const showCombat = ref(false)
@@ -108,6 +128,13 @@ const gameStarted = ref(false)
 const openingNarrationDone = ref(false)
 
 onMounted(async () => {
+  // 多人模式：跳过单人加载逻辑，直接从 WebSocket 获取消息
+  if (multi.isInGame.value) {
+    gameStarted.value = true
+    openingNarrationDone.value = true
+    return
+  }
+
   if (sessionStore.currentSessionId) {
     await chatStore.loadMessages(sessionStore.currentSessionId)
     await characterStore.loadCharacters(sessionStore.currentSessionId)
@@ -507,6 +534,19 @@ function normalizeDifficulty(name) {
 async function sendMessage() {
   const text = userInput.value.trim()
   if (!text || !sessionStore.currentSessionId || chatStore.isStreaming || aiStreaming.value) return
+
+  // 多人模式：己方回合提交行动给服务器，非己方回合仅自由发言
+  if (multi.isInGame.value) {
+    await chatStore.addMessage({ sessionId: sessionStore.currentSessionId || 0, characterId: characterStore.currentCharacterId, role: 'user', content: text, type: 'chat' })
+    if (multi.myTurn.value) {
+      multi.submitAction(text)
+    } else {
+      multi.sendChat(text)
+    }
+    userInput.value = ''
+    return
+  }
+
   userInput.value = ''
 
   // 检测骰子指令: .d20, .2d6+3 等（也可以通过右侧面板投骰）
@@ -631,6 +671,12 @@ const currentCharAttrs = computed(() => {
         <p class="text-[11px] text-ink-muted/50 italic">{{ autoSaveNotice }}</p>
       </div>
     </Transition>
+
+    <!-- 多人回合指示器 -->
+    <div v-if="multi.isInGame.value" class="text-center py-2 rounded-lg text-xs font-medium" :class="multi.myTurn.value ? 'bg-amber-50 text-amber-700 border border-amber-300' : 'bg-gray-50 text-gray-400 border border-gray-200'">
+      {{ multi.myTurn.value ? '⚡ 轮到你了！' : `⏳ 等待 ${multi.currentPlayerName.value || '其他玩家'} 行动...` }}
+      <span class="ml-2 text-[10px] opacity-60">回合制多人模式</span>
+    </div>
 
     <!-- 顶部工具栏：移动端滑动选项卡，桌面端并排 -->
     <div class="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-hide">

@@ -7,13 +7,9 @@
 const API_BASE = 'https://api.deepseek.com/v1'
 const API_KEY_STORAGE_KEY = 'paotuan_deepseek_api_key'
 
-// 默认 API Key — 用于跑团游戏
-const DEFAULT_API_KEY = 'sk-59604fd153054c4382ed9724ec91eb8d'
-
-/** 获取 API Key — 优先使用用户配置，否则使用默认 Key */
+/** 获取 API Key — 用户必须在设置中配置 */
 export function getApiKey() {
-  const userKey = localStorage.getItem(API_KEY_STORAGE_KEY)
-  return userKey || DEFAULT_API_KEY
+  return localStorage.getItem(API_KEY_STORAGE_KEY) || ''
 }
 
 /** 设置用户自定义 API Key */
