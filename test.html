@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>多人服务器测试</title>
+<style>
+body{font-family:monospace;max-width:600px;margin:20px auto;padding:20px;background:#1a1a2e;color:#eee}
+input,button{padding:8px 12px;margin:4px;border-radius:6px;border:none;font-size:14px}
+input{background:#16213e;color:#eee;flex:1}
+button{background:#0f3460;color:#eee;cursor:pointer}
+button:hover{background:#1a4a80}
+#log{background:#0a0a1a;padding:12px;border-radius:8px;height:400px;overflow-y:auto;margin:12px 0;font-size:12px}
+.row{display:flex;gap:8px;margin:8px 0}
+.green{color:#5a5}
+.amber{color:#da5}
+.red{color:#e55}
+</style></head><body>
+<h2>🎲 跑团多人服务器测试</h2>
+<div class="row">
+  <input id="name" placeholder="你的名字" value="测试员">
+  <button onclick="connect()">连接服务器</button>
+</div>
+<div class="row">
+  <button onclick="createRoom()">创建房间</button>
+  <input id="code" placeholder="输入6位邀请码" maxlength="6" style="width:120px">
+  <button onclick="joinRoom()">加入房间</button>
+  <button onclick="sendChat()">发消息</button>
+</div>
+<div class="row">
+  <input id="chat" placeholder="输入聊天内容" style="flex:2">
+</div>
+<h4>日志 <span id="status" class="red">未连接</span></h4>
+<div id="log"></div>
+<script>
+let ws, code='';
+function log(msg,color='white'){const d=document.getElementById('log');d.innerHTML+=`<span class="${color}">${new Date().toLocaleTimeString()} ${msg}</span><br>`;d.scrollTop=d.scrollHeight}
+function connect(){ws=new WebSocket('ws://localhost:3501');ws.onopen=()=>{log('已连接','green');document.getElementById('status').className='green';document.getElementById('status').textContent='已连接';ws.send(JSON.stringify({type:'SET_NAME',name:document.getElementById('name').value}))};ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.type==='ROOM_CREATED'){code=m.code;log('房间创建: '+code,'green')};if(m.type==='PLAYER_JOINED'){log('玩家加入: '+m.playerName+' (共'+m.players.length+'人)','amber')};if(m.type==='CHAT'){log(m.playerName+': '+m.text)};if(m.type==='WELCOME'){log('欢迎, ID: '+m.clientId)}};ws.onclose=()=>{log('断开','red');document.getElementById('status').className='red';document.getElementById('status').textContent='断开'}}
+function createRoom(){ws.send(JSON.stringify({type:'ROOM_CREATE',moduleName:'测试模组'}))}
+function joinRoom(){const c=document.getElementById('code').value.trim().toUpperCase();if(c)ws.send(JSON.stringify({type:'ROOM_JOIN',code:c}))}
+function sendChat(){const t=document.getElementById('chat').value.trim();if(t){ws.send(JSON.stringify({type:'CHAT',text:t}));document.getElementById('chat').value=''}}
+</script>
+</body></html>
